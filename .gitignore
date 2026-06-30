@@ -3,3 +3,6 @@ backups/
 
 # 个人加密密钥库，不上传
 secrets.enc
+
+# 插件本地设置（Obsidian 按用户本地生成），不上传
+data.json

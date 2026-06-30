@@ -201,6 +201,40 @@ secret-storage-demo/
 
 ---
 
+## 📤 发布新版本（自动 Release）
+
+本仓库已配置 GitHub Actions（`.github/workflows/release.yml`）。推送与 `manifest.json` 中 `version` 一致的 tag，即可自动发布符合 Obsidian 标准格式的 Release。
+
+### Obsidian 标准发布格式
+
+Obsidian 从 GitHub Release 的资产中**只读取以下三个文件**，其余资产一律忽略：
+
+- `main.js`
+- `manifest.json`
+- `styles.css`
+
+工作流会自动校验 tag 与 `manifest.json` 的 `version` 是否一致，通过后创建 GitHub Release 并上传这三个文件（`styles.css` 不存在时自动跳过）。
+
+### 发布步骤
+
+1. 更新 `manifest.json` 中的 `version` 为目标版本号（如 `1.0.1`）。
+2. 提交并推送改动：
+   ```bash
+   git add manifest.json
+   git commit -m "release: 1.0.1"
+   git push origin main
+   ```
+3. 创建并推送与版本号**完全一致**的 tag：
+   ```bash
+   git tag -a 1.0.1 -m "1.0.1"
+   git push origin 1.0.1
+   ```
+4. GitHub Actions 自动触发：校验版本一致性 → 创建 Release → 上传 `main.js` / `manifest.json` / `styles.css`，并根据提交记录自动生成发布说明。
+5. 发布完成后，用户即可通过社区插件入口或 BRAT 安装/更新。
+
+> 若希望先以草稿发布再人工确认，可在 `release.yml` 的 `gh release create` 命令中追加 `--draft`。
+> 若日后引入 TypeScript + esbuild 源码工程，需在「Create release」之前补充 `setup-node` 与 `npm run build` 步骤（参考 [obsidian-sample-plugin](https://github.com/obsidianmd/obsidian-sample-plugin)）。
+
 ## 📝 开发计划 / 已知限制
 
 - 当前 `manifest.json` 中 `author` 与 `authorUrl` 仍为占位符，发布前请替换为实际信息。

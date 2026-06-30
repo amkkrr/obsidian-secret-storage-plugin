@@ -1,0 +1,64 @@
+name: Release Obsidian plugin
+
+# Obsidian 标准插件自动发布工作流
+#
+# 触发条件：推送与 manifest.json 中 version 字段匹配的 tag（例如 1.0.0）
+# 工作内容：
+#   1. 校验 tag 与 manifest.json 的 version 一致（不一致则中止）
+#   2. 创建 GitHub Release
+#   3. 附带 Obsidian 下载所需的三个资产：main.js、manifest.json、styles.css
+#
+# Obsidian 只会从 Release 资产中读取这三个文件，其余资产会被忽略。
+# 本仓库直接提交打包后的 main.js（无源码构建步骤），因此无需 npm build；
+# 若日后引入 TypeScript + esbuild 源码工程，请在「Create release」之前
+# 增加 setup-node 与 npm run build 步骤（参考 obsidianmd/obsidian-sample-plugin）。
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  release:
+    name: Create Obsidian plugin release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches manifest.json version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          manifest_version=$(jq -r '.version' manifest.json)
+          echo "Git tag: $tag"
+          echo "manifest.json version: $manifest_version"
+          if [ "$tag" != "$manifest_version" ]; then
+            echo "::error::Tag '$tag' 与 manifest.json 的 version '$manifest_version' 不一致，已中止发布。"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_ENV"
+
+      - name: Check for styles.css
+        id: styles
+        run: |
+          if [ -f styles.css ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release and upload plugin assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets="main.js manifest.json"
+          if [ "${{ steps.styles.outputs.exists }}" = "true" ]; then
+            assets="$assets styles.css"
+          fi
+          echo "Uploading assets: $assets"
+          gh release create "$tag" \
+            --title="$tag" \
+            --generate-notes \
+            $assets
