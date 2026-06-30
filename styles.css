@@ -1,0 +1,119 @@
+/* Secret Storage Plugin Styles */
+
+/* 密钥占位符基础样式 */
+.secret-placeholder {
+	font-family: var(--font-monospace);
+	padding: 2px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+/* 模糊样式 - 悬停时显示 */
+.secret-blur {
+	background-color: var(--background-secondary);
+	filter: blur(4px);
+	transition: filter 0.2s ease;
+}
+
+.secret-blur:hover {
+	filter: blur(0);
+}
+
+/* 隐藏样式 - 显示为圆点 */
+.secret-hidden {
+	background-color: var(--background-secondary);
+	color: var(--text-muted);
+	letter-spacing: 2px;
+}
+
+.secret-hidden:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* 密钥未找到样式 */
+.secret-not-found {
+	background-color: var(--background-modifier-error);
+	color: var(--text-error);
+	font-size: 0.9em;
+}
+
+/* 锁定状态样式 - 未解锁时显示 */
+.secret-locked {
+	background-color: color-mix(in srgb, var(--interactive-accent) 15%, var(--background-secondary));
+	color: var(--text-muted);
+	border: 1px dashed var(--text-muted);
+	transition: all 0.2s ease;
+}
+
+.secret-locked:hover {
+	background-color: color-mix(in srgb, var(--interactive-accent) 25%, var(--background-secondary));
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+}
+
+/* 密钥管理器模态框 */
+.secret-manager-modal {
+	min-width: 400px;
+}
+
+.secret-manager-modal h2 {
+	margin-bottom: 1em;
+}
+
+.secret-manager-modal hr {
+	margin: 1.5em 0;
+	border-color: var(--background-modifier-border);
+}
+
+/* ============================================
+   设置页面 - 密钥管理区块
+   ============================================ */
+
+/* 密钥管理区块 */
+.secret-management-section {
+	margin-top: 24px;
+	padding-top: 16px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* 加载状态 */
+.secret-list-loading {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+/* 空状态 */
+.secret-list-empty {
+	color: var(--text-muted);
+	font-style: italic;
+	padding: 16px;
+	text-align: center;
+	background: var(--background-secondary);
+	border-radius: 8px;
+}
+
+/* 密钥列表 */
+.secret-list {
+	margin-top: 8px;
+}
+
+/* 编辑表单 */
+.secret-edit-form {
+	background: var(--background-secondary);
+	border-radius: 8px;
+	padding: 12px;
+	margin: 8px 0;
+	border-left: 3px solid var(--interactive-accent);
+}
+
+.secret-edit-title {
+	font-weight: 600;
+	margin-bottom: 8px;
+	color: var(--text-normal);
+}
+
+.secret-edit-hint {
+	font-size: 0.85em;
+	color: var(--text-muted);
+	margin-top: 8px;
+}

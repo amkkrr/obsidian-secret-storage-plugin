@@ -1,0 +1,8 @@
+{
+  "showNotifications": true,
+  "enablePlaceholderReplacement": true,
+  "placeholderStyle": "blur",
+  "storageMode": "sync",
+  "autoLockTimeout": 30,
+  "keepBackupCount": 5
+}
