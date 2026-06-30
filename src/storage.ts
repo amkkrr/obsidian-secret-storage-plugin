@@ -1,0 +1,591 @@
+import { Notice } from "obsidian";
+import { cryptoService } from "./crypto";
+
+export class LocalStorageProvider {
+  constructor(app) {
+    this.app = app;
+  }
+  async save(id, secret) {
+    try {
+      this.app.secretStorage.setSecret(id, secret);
+      return true;
+    } catch (error) {
+      console.error("LocalStorageProvider save error:", error);
+      return false;
+    }
+  }
+  async get(id) {
+    try {
+      return this.app.secretStorage.getSecret(id) || null;
+    } catch (error) {
+      console.error("LocalStorageProvider get error:", error);
+      return null;
+    }
+  }
+  async list() {
+    try {
+      return this.app.secretStorage.listSecrets();
+    } catch (error) {
+      console.error("LocalStorageProvider list error:", error);
+      return [];
+    }
+  }
+  async delete(id) {
+    try {
+      this.app.secretStorage.setSecret(id, "");
+      return true;
+    } catch (error) {
+      console.error("LocalStorageProvider delete error:", error);
+      return false;
+    }
+  }
+  isUnlocked() {
+    return true;
+  }
+  getMode() {
+    return "local";
+  }
+};
+export class SyncStorageProvider {
+  constructor(app, autoLockMinutes = 30) {
+    // 运行时状态
+    this.unlocked = false;
+    this.secrets = {};
+    this.vault = null;
+    this.encryptionKey = null;
+    this.password = null;
+    // 自动锁定定时器
+    this.lockTimer = null;
+    this.autoLockTimeout = 30 * 60 * 1e3;
+    // 默认 30 分钟
+    // 文件路径
+    this.VAULT_FILE = "secrets.enc";
+    this.BACKUP_DIR = "backups";
+    // 冲突状态
+    this.conflictRemoteVault = null;
+    this.conflictRemoteSecrets = null;
+    this.conflictCallback = null;
+    this.app = app;
+    this.crypto = cryptoService;
+    this.deviceId = this.getOrCreateDeviceId();
+    this.autoLockTimeout = autoLockMinutes * 60 * 1e3;
+  }
+  /**
+   * 获取或创建设备 ID
+   */
+  getOrCreateDeviceId() {
+    const key = "secret-storage-device-id";
+    let deviceId = localStorage.getItem(key);
+    if (!deviceId) {
+      deviceId = this.crypto.generateDeviceId();
+      localStorage.setItem(key, deviceId);
+    }
+    return deviceId;
+  }
+  /**
+   * 获取插件数据目录路径
+   */
+  getPluginDir() {
+    return `${this.app.vault.configDir}/plugins/secret-storage-demo`;
+  }
+  /**
+   * 获取密钥库文件路径
+   */
+  getVaultPath() {
+    return `${this.getPluginDir()}/${this.VAULT_FILE}`;
+  }
+  /**
+   * 获取备份目录路径
+   */
+  getBackupDir() {
+    return `${this.getPluginDir()}/${this.BACKUP_DIR}`;
+  }
+  /**
+   * 检查密钥库是否已初始化
+   */
+  async isInitialized() {
+    try {
+      const exists = await this.app.vault.adapter.exists(this.getVaultPath());
+      return exists;
+    } catch (e) {
+      return false;
+    }
+  }
+  /**
+   * 初始化密钥库（首次设置密码）
+   */
+  async initialize(password) {
+    try {
+      const vault = await this.crypto.createEncryptedVault(password, {}, this.deviceId);
+      const pluginDir = this.getPluginDir();
+      if (!await this.app.vault.adapter.exists(pluginDir)) {
+        await this.app.vault.adapter.mkdir(pluginDir);
+      }
+      await this.app.vault.adapter.write(
+        this.getVaultPath(),
+        JSON.stringify(vault, null, 2)
+      );
+      this.vault = vault;
+      this.secrets = {};
+      this.password = password;
+      this.unlocked = true;
+      this.resetLockTimer();
+      return true;
+    } catch (error) {
+      console.error("SyncStorageProvider initialize error:", error);
+      return false;
+    }
+  }
+  /**
+   * 解锁密钥库
+   */
+  async unlock(password) {
+    try {
+      const content = await this.app.vault.adapter.read(this.getVaultPath());
+      const vault = JSON.parse(content);
+      const secretsData = await this.crypto.decryptVault(vault, password);
+      if (!secretsData) {
+        return false;
+      }
+      this.vault = vault;
+      this.secrets = secretsData.secrets;
+      this.password = password;
+      this.unlocked = true;
+      this.resetLockTimer();
+      return true;
+    } catch (error) {
+      console.error("SyncStorageProvider unlock error:", error);
+      return false;
+    }
+  }
+  /**
+   * 锁定密钥库
+   */
+  lock() {
+    this.unlocked = false;
+    this.secrets = {};
+    this.encryptionKey = null;
+    this.password = null;
+    if (this.lockTimer) {
+      clearTimeout(this.lockTimer);
+      this.lockTimer = null;
+    }
+  }
+  /**
+   * 重置自动锁定定时器
+   */
+  resetLockTimer() {
+    if (this.lockTimer) {
+      clearTimeout(this.lockTimer);
+    }
+    if (this.autoLockTimeout > 0) {
+      this.lockTimer = setTimeout(() => {
+        this.lock();
+        new Notice("\u{1F512} \u5BC6\u94A5\u5E93\u5DF2\u81EA\u52A8\u9501\u5B9A");
+      }, this.autoLockTimeout);
+    }
+  }
+  /**
+   * 保存密钥
+   */
+  async save(id, secret) {
+    if (!this.unlocked || !this.password) {
+      new Notice("\u26A0\uFE0F \u8BF7\u5148\u89E3\u9501\u5BC6\u94A5\u5E93");
+      return false;
+    }
+    try {
+      this.secrets[id] = secret;
+      await this.persistSecrets();
+      this.resetLockTimer();
+      return true;
+    } catch (error) {
+      console.error("SyncStorageProvider save error:", error);
+      return false;
+    }
+  }
+  /**
+   * 获取密钥
+   */
+  async get(id) {
+    if (!this.unlocked) {
+      return null;
+    }
+    this.resetLockTimer();
+    return this.secrets[id] || null;
+  }
+  /**
+   * 列出所有密钥 ID
+   */
+  async list() {
+    if (!this.unlocked) {
+      return [];
+    }
+    this.resetLockTimer();
+    return Object.keys(this.secrets).filter((id) => this.secrets[id] !== "");
+  }
+  /**
+   * 删除密钥
+   */
+  async delete(id) {
+    if (!this.unlocked || !this.password) {
+      new Notice("\u26A0\uFE0F \u8BF7\u5148\u89E3\u9501\u5BC6\u94A5\u5E93");
+      return false;
+    }
+    try {
+      delete this.secrets[id];
+      await this.persistSecrets();
+      this.resetLockTimer();
+      return true;
+    } catch (error) {
+      console.error("SyncStorageProvider delete error:", error);
+      return false;
+    }
+  }
+  /**
+   * 持久化密钥到文件
+   */
+  async persistSecrets() {
+    if (!this.vault || !this.password) {
+      throw new Error("Vault not initialized");
+    }
+    await this.createBackup();
+    const updatedVault = await this.crypto.updateEncryptedVault(
+      this.vault,
+      this.password,
+      this.secrets,
+      this.deviceId
+    );
+    if (!updatedVault) {
+      throw new Error("Failed to update vault");
+    }
+    await this.app.vault.adapter.write(
+      this.getVaultPath(),
+      JSON.stringify(updatedVault, null, 2)
+    );
+    this.vault = updatedVault;
+  }
+  /**
+   * 创建备份
+   */
+  async createBackup() {
+    try {
+      const backupDir = this.getBackupDir();
+      if (!await this.app.vault.adapter.exists(backupDir)) {
+        await this.app.vault.adapter.mkdir(backupDir);
+      }
+      const vaultPath = this.getVaultPath();
+      if (await this.app.vault.adapter.exists(vaultPath)) {
+        const content = await this.app.vault.adapter.read(vaultPath);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupPath = `${backupDir}/secrets.${timestamp}.enc`;
+        await this.app.vault.adapter.write(backupPath, content);
+        await this.cleanupBackups(5);
+      }
+    } catch (error) {
+      console.error("Backup creation failed:", error);
+    }
+  }
+  /**
+   * 清理旧备份
+   */
+  async cleanupBackups(keepCount) {
+    try {
+      const backupDir = this.getBackupDir();
+      const files = await this.app.vault.adapter.list(backupDir);
+      const backups = files.files.filter((f) => f.endsWith(".enc")).sort().reverse();
+      for (let i = keepCount; i < backups.length; i++) {
+        await this.app.vault.adapter.remove(backups[i]);
+      }
+    } catch (error) {
+      console.error("Backup cleanup failed:", error);
+    }
+  }
+  /**
+   * 修改主密码
+   */
+  async changePassword(oldPassword, newPassword) {
+    if (!this.vault) {
+      return false;
+    }
+    const backupVault = this.vault;
+    const backupPassword = this.password;
+    try {
+      await this.createBackup();
+      const newVault = await this.crypto.changePassword(
+        this.vault,
+        oldPassword,
+        newPassword,
+        this.deviceId
+      );
+      if (!newVault) {
+        return false;
+      }
+      await this.app.vault.adapter.write(
+        this.getVaultPath(),
+        JSON.stringify(newVault, null, 2)
+      );
+      this.vault = newVault;
+      this.password = newPassword;
+      return true;
+    } catch (error) {
+      this.vault = backupVault;
+      this.password = backupPassword;
+      console.error("Password change failed:", error);
+      return false;
+    }
+  }
+  isUnlocked() {
+    return this.unlocked;
+  }
+  getMode() {
+    return "sync";
+  }
+  /**
+   * 获取密钥库信息
+   */
+  getVaultInfo() {
+    if (!this.vault) {
+      return null;
+    }
+    return {
+      lastModified: this.vault.lastModified,
+      deviceId: this.vault.deviceId
+    };
+  }
+  /**
+   * 设置自动锁定超时时间
+   */
+  setAutoLockTimeout(minutes) {
+    this.autoLockTimeout = minutes * 60 * 1e3;
+    if (this.unlocked) {
+      this.resetLockTimer();
+    }
+  }
+  /**
+   * 从本地模式迁移密钥
+   */
+  async migrateFromLocal(localSecrets) {
+    if (!this.unlocked || !this.password) {
+      return false;
+    }
+    try {
+      this.secrets = { ...this.secrets, ...localSecrets };
+      await this.persistSecrets();
+      return true;
+    } catch (error) {
+      console.error("Migration failed:", error);
+      return false;
+    }
+  }
+  /**
+   * 导出所有密钥（用于迁移到本地模式）
+   */
+  exportSecrets() {
+    if (!this.unlocked) {
+      return {};
+    }
+    return { ...this.secrets };
+  }
+  /**
+   * 冲突信息
+   */
+  getConflictInfo() {
+    if (!this.vault || !this.conflictRemoteVault) {
+      return null;
+    }
+    return {
+      localVault: this.vault,
+      remoteVault: this.conflictRemoteVault,
+      localSecrets: Object.keys(this.secrets),
+      remoteSecrets: this.conflictRemoteSecrets ? Object.keys(this.conflictRemoteSecrets) : []
+    };
+  }
+  /**
+   * 检测同步冲突
+   * 在解锁时调用，比较内存中的版本和文件系统中的版本
+   */
+  async detectConflict() {
+    if (!this.vault) {
+      return "none";
+    }
+    try {
+      const vaultPath = this.getVaultPath();
+      if (!await this.app.vault.adapter.exists(vaultPath)) {
+        return "none";
+      }
+      const remoteContent = await this.app.vault.adapter.read(vaultPath);
+      const remoteVault = JSON.parse(remoteContent);
+      const localTime = new Date(this.vault.lastModified).getTime();
+      const remoteTime = new Date(remoteVault.lastModified).getTime();
+      if (localTime === remoteTime) {
+        return "none";
+      }
+      if (this.vault.deviceId === remoteVault.deviceId) {
+        return localTime > remoteTime ? "local-newer" : "remote-newer";
+      }
+      this.conflictRemoteVault = remoteVault;
+      if (this.password) {
+        const remoteData = await this.crypto.decryptVault(remoteVault, this.password);
+        if (remoteData) {
+          this.conflictRemoteSecrets = remoteData.secrets;
+        }
+      }
+      return "conflict";
+    } catch (error) {
+      console.error("Conflict detection failed:", error);
+      return "none";
+    }
+  }
+  /**
+   * 在保存前检测冲突
+   * 返回是否可以继续保存
+   */
+  async checkBeforeSave() {
+    const conflictType = await this.detectConflict();
+    switch (conflictType) {
+      case "none":
+      case "local-newer":
+        return { canSave: true, conflictType };
+      case "remote-newer":
+        return { canSave: false, conflictType };
+      case "conflict":
+        return { canSave: false, conflictType };
+      default:
+        return { canSave: true, conflictType: "none" };
+    }
+  }
+  /**
+   * 解决冲突 - 使用本地版本
+   */
+  async resolveConflictWithLocal() {
+    if (!this.unlocked || !this.password || !this.vault) {
+      return false;
+    }
+    try {
+      await this.persistSecrets();
+      this.clearConflictState();
+      return true;
+    } catch (error) {
+      console.error("Resolve conflict with local failed:", error);
+      return false;
+    }
+  }
+  /**
+   * 解决冲突 - 使用远程版本
+   */
+  async resolveConflictWithRemote() {
+    if (!this.password || !this.conflictRemoteVault) {
+      return false;
+    }
+    try {
+      const remoteData = await this.crypto.decryptVault(this.conflictRemoteVault, this.password);
+      if (!remoteData) {
+        return false;
+      }
+      this.vault = this.conflictRemoteVault;
+      this.secrets = remoteData.secrets;
+      this.clearConflictState();
+      return true;
+    } catch (error) {
+      console.error("Resolve conflict with remote failed:", error);
+      return false;
+    }
+  }
+  /**
+   * 解决冲突 - 合并两个版本
+   * 策略: 保留两边所有的密钥，如果同一 ID 存在不同值，保留较新的
+   */
+  async resolveConflictWithMerge() {
+    if (!this.unlocked || !this.password || !this.vault || !this.conflictRemoteVault) {
+      return false;
+    }
+    try {
+      const remoteData = await this.crypto.decryptVault(this.conflictRemoteVault, this.password);
+      if (!remoteData) {
+        return false;
+      }
+      const localTime = new Date(this.vault.lastModified).getTime();
+      const remoteTime = new Date(this.conflictRemoteVault.lastModified).getTime();
+      const mergedSecrets = {};
+      const allIds = /* @__PURE__ */ new Set([
+        ...Object.keys(this.secrets),
+        ...Object.keys(remoteData.secrets)
+      ]);
+      for (const id of allIds) {
+        const localValue = this.secrets[id];
+        const remoteValue = remoteData.secrets[id];
+        if (localValue && remoteValue) {
+          mergedSecrets[id] = localTime >= remoteTime ? localValue : remoteValue;
+        } else if (localValue) {
+          mergedSecrets[id] = localValue;
+        } else if (remoteValue) {
+          mergedSecrets[id] = remoteValue;
+        }
+      }
+      this.secrets = mergedSecrets;
+      await this.persistSecrets();
+      this.clearConflictState();
+      return true;
+    } catch (error) {
+      console.error("Resolve conflict with merge failed:", error);
+      return false;
+    }
+  }
+  /**
+   * 清除冲突状态
+   */
+  clearConflictState() {
+    this.conflictRemoteVault = null;
+    this.conflictRemoteSecrets = null;
+    this.conflictCallback = null;
+  }
+  /**
+   * 检查是否有待解决的冲突
+   */
+  hasConflict() {
+    return this.conflictRemoteVault !== null;
+  }
+  /**
+   * 刷新密钥库 - 从文件重新加载
+   * 用于检测远程同步后的变化
+   */
+  async refresh() {
+    if (!this.unlocked || !this.password) {
+      return "none";
+    }
+    const conflictType = await this.detectConflict();
+    if (conflictType === "remote-newer") {
+      const content = await this.app.vault.adapter.read(this.getVaultPath());
+      const remoteVault = JSON.parse(content);
+      const remoteData = await this.crypto.decryptVault(remoteVault, this.password);
+      if (remoteData) {
+        this.vault = remoteVault;
+        this.secrets = remoteData.secrets;
+      }
+    }
+    return conflictType;
+  }
+};
+// ============================================
+// 冲突检测与解决 (Phase 4.3, 4.4)
+// ============================================
+/**
+ * 冲突检测结果类型
+ */
+SyncStorageProvider.ConflictType = {
+  NONE: "none",
+  // 无冲突
+  LOCAL_NEWER: "local-newer",
+  // 本地版本更新
+  REMOTE_NEWER: "remote-newer",
+  // 远程版本更新
+  CONFLICT: "conflict"
+  // 真正的冲突（不同设备同时修改）
+};
+export function createStorageProvider(app, mode, autoLockMinutes = 30) {
+  if (mode === "sync") {
+    return new SyncStorageProvider(app, autoLockMinutes);
+  }
+  return new LocalStorageProvider(app);
+}
+

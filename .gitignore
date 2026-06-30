@@ -1,8 +1,27 @@
-# 备份目录不上传
+# vscode
+.vscode/
+
+# IDE
+*.iml
+.idea
+
+# npm
+node_modules/
+
+# 构建产物，不纳入版本库（由 CI 构建并上传到 GitHub Release）
+main.js
+
+# sourcemap
+*.map
+
+# 备份目录（个人数据）
 backups/
 
-# 个人加密密钥库，不上传
+# 个人加密密钥库（个人数据）
 secrets.enc
 
-# 插件本地设置（Obsidian 按用户本地生成），不上传
+# 插件本地设置（Obsidian 按用户本地生成）
 data.json
+
+# macOS
+.DS_Store

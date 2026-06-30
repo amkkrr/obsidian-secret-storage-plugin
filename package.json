@@ -1,0 +1,27 @@
+{
+	"name": "obsidian-secret-storage-plugin",
+	"version": "1.0.0",
+	"description": "演示如何使用 Obsidian SecretStorage API 安全存储 API 密钥等敏感信息的 Obsidian 插件",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production",
+		"typecheck": "tsc -noEmit -skipLibCheck"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"secret-storage",
+		"encryption"
+	],
+	"author": "amkkrr",
+	"license": "UNLICENSED",
+	"devDependencies": {
+		"@types/node": "^22.15.17",
+		"esbuild": "^0.25.5",
+		"obsidian": "latest",
+		"tslib": "^2.8.1",
+		"typescript": "^5.8.3"
+	}
+}

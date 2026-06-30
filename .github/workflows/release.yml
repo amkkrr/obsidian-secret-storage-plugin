@@ -1,17 +1,15 @@
 name: Release Obsidian plugin
 
-# Obsidian 标准插件自动发布工作流
+# Obsidian 标准插件自动发布工作流（CI 构建 + 发布）
 #
-# 触发条件：推送与 manifest.json 中 version 字段匹配的 tag（例如 1.0.0）
+# 触发条件：推送与 manifest.json 中 version 字段匹配的 tag（例如 1.0.1）
 # 工作内容：
 #   1. 校验 tag 与 manifest.json 的 version 一致（不一致则中止）
-#   2. 创建 GitHub Release
-#   3. 附带 Obsidian 下载所需的三个资产：main.js、manifest.json、styles.css
+#   2. npm ci 安装依赖、npm run build 从 TypeScript 源码编译出 main.js
+#   3. 创建 GitHub Release 并附带 Obsidian 下载所需的三个资产：
+#      main.js（CI 构建产物）、manifest.json、styles.css
 #
 # Obsidian 只会从 Release 资产中读取这三个文件，其余资产会被忽略。
-# 本仓库直接提交打包后的 main.js（无源码构建步骤），因此无需 npm build；
-# 若日后引入 TypeScript + esbuild 源码工程，请在「Create release」之前
-# 增加 setup-node 与 npm run build 步骤（参考 obsidianmd/obsidian-sample-plugin）。
 
 on:
   push:
@@ -20,7 +18,7 @@ on:
 
 jobs:
   release:
-    name: Create Obsidian plugin release
+    name: Build and release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,6 +37,18 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
 
       - name: Check for styles.css
         id: styles

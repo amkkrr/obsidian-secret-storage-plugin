@@ -64,17 +64,28 @@ Secret Storage Demo 为 Obsidian 提供一套独立的密钥管理方案：既�
 
 ### 方式二：从源码构建
 
-> 仓库目前只包含 esbuild 打包后的 `main.js`。源码结构（参考自打包注释）为：
->
-> ```
-> main.ts
-> src/
-> ├── crypto.ts    # 加密服务：PBKDF2 / AES-GCM / 密钥库读写
-> ├── storage.ts   # LocalStorageProvider / SyncStorageProvider
-> └── ui.ts        # 模态框与密码强度指示器
-> ```
+仓库已包含完整 TypeScript + esbuild 源码工程：
 
-若需二次开发，可参照 [Obsidian 示例插件](https://github.com/obsidianmd/obsidian-sample-plugin) 搭建 TypeScript + esbuild 工程，将上述模块纳入构建即可。
+```
+main.ts             # 插件主类、命令、设置页
+src/
+├── crypto.ts       # 加密服务：PBKDF2 / AES-GCM / 密钥库读写
+├── storage.ts      # LocalStorageProvider / SyncStorageProvider
+└── ui.ts           # 模态框与密码强度指示器
+esbuild.config.mjs  # 构建配置
+package.json        # 依赖与脚本
+tsconfig.json       # TypeScript 配置
+```
+
+构建步骤：
+
+```bash
+npm install          # 安装依赖
+npm run build        # 生产构建，输出压缩版 main.js
+npm run dev          # 开发模式，监听变更并自动重建（不压缩）
+```
+
+构建产物 `main.js` 已加入 `.gitignore`，不纳入版本库；发布由 GitHub Actions 在 CI 中构建（见下文「发布新版本」）。
 
 ---
 
@@ -140,17 +151,26 @@ ID 仅允许 **小写字母、数字、短横线**，正则：`^[a-z0-9-]+$`，�
 
 ```
 secret-storage-demo/
-├── manifest.json     # 插件清单
-├── main.js           # esbuild 打包产物（含全部逻辑）
-├── styles.css        # 占位符、模态框、设置页样式
-├── data.json         # 插件设置（由 Obsidian 管理）
-├── secrets.enc       # 同步模式加密密钥库（⚠️ 已 gitignore，个人数据）
-├── backups/          # 历史备份（已 gitignore）
+├── manifest.json        # 插件清单
+├── main.ts              # 插件主类、命令、设置页（源码入口）
+├── src/                 # 源码
+│   ├── crypto.ts        # 加密服务
+│   ├── storage.ts       # 存储提供者
+│   └── ui.ts            # 模态框与密码强度
+├── styles.css           # 占位符、模态框、设置页样式
+├── esbuild.config.mjs   # 构建配置
+├── package.json         # 依赖与脚本
+├── tsconfig.json        # TypeScript 配置
+├── versions.json        # 版本兼容映射
+├── main.js              # 构建产物（⚠️ 已 gitignore，由 CI 生成）
+├── data.json            # 插件设置（已 gitignore，由 Obsidian 管理）
+├── secrets.enc          # 同步模式加密密钥库（已 gitignore，个人数据）
+├── backups/             # 历史备份（已 gitignore）
 │   └── secrets.<timestamp>.enc
-└── .gitignore        # 忽略 secrets.enc 与 backups/
+└── .gitignore
 ```
 
-> ⚠️ `secrets.enc` 与 `backups/` 含个人敏感数据，已加入 `.gitignore`，不会进入版本库。
+> ⚠️ `main.js` 为构建产物；`secrets.enc`、`backups/`、`data.json` 为个人/本地数据——均已加入 `.gitignore`，不进入版本库。
 
 ### `secrets.enc` 文件格式（同步模式）
 
@@ -213,14 +233,14 @@ Obsidian 从 GitHub Release 的资产中**只读取以下三个文件**，其余
 - `manifest.json`
 - `styles.css`
 
-工作流会自动校验 tag 与 `manifest.json` 的 `version` 是否一致，通过后创建 GitHub Release 并上传这三个文件（`styles.css` 不存在时自动跳过）。
+工作流会自动校验 tag 与 `manifest.json` 的 `version` 是否一致，然后从 TypeScript 源码构建 `main.js`，最后创建 GitHub Release 并上传这三个文件（`styles.css` 不存在时自动跳过）。
 
 ### 发布步骤
 
-1. 更新 `manifest.json` 中的 `version` 为目标版本号（如 `1.0.1`）。
+1. 更新 `manifest.json` 中的 `version` 为目标版本号（如 `1.0.1`），并在 `versions.json` 中添加 `"1.0.1": "1.11.4"`（版本号 → 最低兼容 Obsidian 版本）。
 2. 提交并推送改动：
    ```bash
-   git add manifest.json
+   git add manifest.json versions.json
    git commit -m "release: 1.0.1"
    git push origin main
    ```
@@ -229,11 +249,11 @@ Obsidian 从 GitHub Release 的资产中**只读取以下三个文件**，其余
    git tag -a 1.0.1 -m "1.0.1"
    git push origin 1.0.1
    ```
-4. GitHub Actions 自动触发：校验版本一致性 → 创建 Release → 上传 `main.js` / `manifest.json` / `styles.css`，并根据提交记录自动生成发布说明。
+4. GitHub Actions 自动触发：校验版本一致性 → `npm ci` 安装依赖 → `npm run build` 从源码编译 `main.js` → 创建 Release → 上传 `main.js` / `manifest.json` / `styles.css`，并自动生成发布说明。
 5. 发布完成后，用户即可通过社区插件入口或 BRAT 安装/更新。
 
+> CI 会从 TypeScript 源码现场构建 `main.js`，因此仓库不保存 `main.js`（已 gitignore）。
 > 若希望先以草稿发布再人工确认，可在 `release.yml` 的 `gh release create` 命令中追加 `--draft`。
-> 若日后引入 TypeScript + esbuild 源码工程，需在「Create release」之前补充 `setup-node` 与 `npm run build` 步骤（参考 [obsidian-sample-plugin](https://github.com/obsidianmd/obsidian-sample-plugin)）。
 
 ## 📝 开发计划 / 已知限制
 
