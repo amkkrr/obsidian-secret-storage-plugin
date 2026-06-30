@@ -1,2 +1,5 @@
 # 备份目录不上传
 backups/
+
+# 个人加密密钥库，不上传
+secrets.enc
