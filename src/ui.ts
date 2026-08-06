@@ -1,4 +1,5 @@
 import { Modal, Setting, Notice } from "obsidian";
+import { SyncConflictError } from "./storage";
 
 function evaluatePasswordStrength(password) {
   let score = 0;
@@ -73,6 +74,11 @@ function createPasswordStrengthIndicator(container, password) {
   return wrapper;
 }
 export class SetupPasswordModal extends Modal {
+  provider: any;
+  onSuccess: any;
+  passwordInput: any;
+  confirmInput: any;
+  strengthContainer: any;
   constructor(app, provider, onSuccess) {
     super(app);
     this.provider = provider;
@@ -139,11 +145,16 @@ export class SetupPasswordModal extends Modal {
       new Notice("\u26A0\uFE0F \u5BC6\u7801\u5F3A\u5EA6\u592A\u5F31\uFF0C\u8BF7\u4F7F\u7528\u66F4\u590D\u6742\u7684\u5BC6\u7801");
       return;
     }
-    const success = await this.provider.initialize(password);
-    if (success) {
+    const result = await this.provider.initialize(password);
+    if (result.ok) {
       new Notice("\u2705 \u5BC6\u94A5\u5E93\u521B\u5EFA\u6210\u529F");
       this.onSuccess();
       this.close();
+    } else if (result.reason === "already-exists") {
+      // 审计 G-1：同步恰在此时把远端库送来了 → 引导改为解锁，而非笼统「创建失败」
+      new Notice("\u26A0\uFE0F \u68C0\u6D4B\u5230\u5BC6\u94A5\u5E93\u6587\u4EF6\u5DF2\u5B58\u5728\uFF08\u540C\u6B65\u5DF2\u5B8C\u6210\uFF09\uFF0C\u8BF7\u6539\u4E3A\u89E3\u9501");
+      this.close();
+      new UnlockModal(this.app, this.provider, this.onSuccess).open();
     } else {
       new Notice("\u274C \u5BC6\u94A5\u5E93\u521B\u5EFA\u5931\u8D25");
     }
@@ -153,8 +164,100 @@ export class SetupPasswordModal extends Modal {
     contentEl.empty();
   }
 };
+export class VaultNotFoundModal extends Modal {
+  provider: any;
+  onCreated: any;
+  onUnlocked: any;
+  onCancel: any;
+  // 痕迹强警告二次确认状态
+  tracesConfirmed: boolean;
+  warningEl: any;
+  /**
+   * RFC-001 §5.2：文件不存在时的三选一决策模态框
+   * @param {Object} options { onCreated, onUnlocked, onCancel }
+   */
+  constructor(app, provider, options: any = {}) {
+    super(app);
+    this.provider = provider;
+    this.onCreated = options.onCreated || (() => {});
+    this.onUnlocked = options.onUnlocked || (() => {});
+    this.onCancel = options.onCancel || (() => {});
+    // 痕迹强警告二次确认状态
+    this.tracesConfirmed = false;
+    this.warningEl = null;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("secret-storage-modal");
+    contentEl.createEl("h2", { text: "🔍 未检测到密钥库文件" });
+    contentEl.createEl("p", {
+      text: "在当前 vault 中未找到密钥库文件（secrets.enc）。这可能是两种情况：",
+      cls: "setting-item-description"
+    });
+    const listEl = contentEl.createEl("ul", { cls: "setting-item-description" });
+    listEl.createEl("li", { text: "① 真正首次使用（任何设备都还没有密钥库）" });
+    listEl.createEl("li", { text: "② 同步尚未完成——其他设备已有密钥库，文件还没同步到本机" });
+    contentEl.createEl("p", {
+      text: "若这是新设备，请先在「设置 → 同步」中确认「同步所有其他类型文件」与「其他文件类型」已开启（见 RFC-001 附注），再点击等待/重试。",
+      cls: "setting-item-description"
+    });
+    this.warningEl = contentEl.createDiv({ cls: "setting-item-description" });
+    this.warningEl.style.display = "none";
+    this.warningEl.style.backgroundColor = "var(--background-modifier-error)";
+    this.warningEl.style.padding = "10px";
+    this.warningEl.style.borderRadius = "5px";
+    this.warningEl.style.marginBottom = "15px";
+    this.warningEl.innerHTML = `<strong>⚠️ 检测到本 vault 存在密码库痕迹（可能来自其他设备）。</strong><br>若你并非首次使用，请先等待同步完成并选择解锁，而不是创建新库。`;
+    new Setting(contentEl)
+      .setName("创建新密码库")
+      .setDesc("确认这是首次使用，创建全新的加密密钥库")
+      .addButton((btn) => btn.setButtonText("创建新密码库").setCta().onClick(() => this.handleCreate(btn)));
+    new Setting(contentEl)
+      .setName("等待同步后重试")
+      .setDesc("若这是新设备，请等待 Obsidian Sync 把密钥库文件同步到本机后重试")
+      .addButton((btn) => btn.setButtonText("立即重试").onClick(() => this.handleRetry()));
+    new Setting(contentEl).addButton((btn) => btn.setButtonText("取消").onClick(() => this.handleCancel()));
+  }
+  async handleCreate(btn) {
+    if (!this.tracesConfirmed) {
+      const hasTraces = await this.provider.hasAnyVaultTraces();
+      if (hasTraces) {
+        // 强警告二次确认（RFC-001 §5.2）：有痕迹 → 显示警告并切换按钮为警示样式
+        this.tracesConfirmed = true;
+        this.warningEl.style.display = "block";
+        btn.setButtonText("我确认，仍要创建新密码库").setWarning();
+        return;
+      }
+    }
+    this.close();
+    new SetupPasswordModal(this.app, this.provider, this.onCreated).open();
+  }
+  async handleRetry() {
+    const initialized = await this.provider.isInitialized();
+    if (initialized) {
+      this.close();
+      new UnlockModal(this.app, this.provider, this.onUnlocked).open();
+    } else {
+      new Notice("⏳ 仍未检测到密钥库文件，请检查 Obsidian Sync 选择性同步设置，可稍后重试");
+    }
+  }
+  handleCancel() {
+    // 取消分支（RFC-001 §5.2）：设置页 dropdown 由 display() 重绘回实际 settings
+    this.onCancel();
+    this.close();
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
 export class UnlockModal extends Modal {
-  constructor(app, provider, onSuccess, onCancel) {
+  provider: any;
+  onSuccess: any;
+  onCancel: any;
+  passwordInput: any;
+  constructor(app, provider, onSuccess, onCancel = null) {
     super(app);
     this.provider = provider;
     this.onSuccess = onSuccess;
@@ -214,6 +317,12 @@ export class UnlockModal extends Modal {
   }
 };
 export class ChangePasswordModal extends Modal {
+  provider: any;
+  onSuccess: any;
+  oldPasswordInput: any;
+  newPasswordInput: any;
+  confirmInput: any;
+  strengthContainer: any;
   constructor(app, provider, onSuccess) {
     super(app);
     this.provider = provider;
@@ -277,7 +386,7 @@ export class ChangePasswordModal extends Modal {
       new Notice("\u26A0\uFE0F \u65B0\u5BC6\u7801\u5F3A\u5EA6\u592A\u5F31");
       return;
     }
-    const submitBtn = this.contentEl.querySelector(".mod-cta");
+    const submitBtn: any = this.contentEl.querySelector(".mod-cta");
     const originalText = (submitBtn == null ? void 0 : submitBtn.textContent) || "\u4FEE\u6539\u5BC6\u7801";
     if (submitBtn) {
       submitBtn.textContent = "\u4FEE\u6539\u4E2D...";
@@ -307,6 +416,9 @@ export class ChangePasswordModal extends Modal {
   }
 };
 export class MigrationModal extends Modal {
+  provider: any;
+  localSecrets: any;
+  onComplete: any;
   constructor(app, provider, localSecrets, onComplete) {
     super(app);
     this.provider = provider;
@@ -335,19 +447,35 @@ export class MigrationModal extends Modal {
     }));
   }
   async handleMigrate(deleteLocal) {
-    const success = await this.provider.migrateFromLocal(this.localSecrets);
-    if (success) {
-      if (deleteLocal) {
-        for (const id of Object.keys(this.localSecrets)) {
-          this.app.secretStorage.setSecret(id, "");
+    try {
+      const success = await this.provider.migrateFromLocal(this.localSecrets);
+      if (success) {
+        if (deleteLocal) {
+          for (const id of Object.keys(this.localSecrets)) {
+            this.app.secretStorage.setSecret(id, "");
+          }
+          new Notice("\u2705 \u5BC6\u94A5\u5DF2\u8FC1\u79FB\u5E76\u6E05\u9664\u672C\u5730\u526F\u672C");
+        } else {
+          new Notice("\u2705 \u5BC6\u94A5\u5DF2\u8FC1\u79FB\uFF08\u672C\u5730\u526F\u672C\u5DF2\u4FDD\u7559\uFF09");
         }
-        new Notice("\u2705 \u5BC6\u94A5\u5DF2\u8FC1\u79FB\u5E76\u6E05\u9664\u672C\u5730\u526F\u672C");
+        this.onComplete();
+        this.close();
       } else {
-        new Notice("\u2705 \u5BC6\u94A5\u5DF2\u8FC1\u79FB\uFF08\u672C\u5730\u526F\u672C\u5DF2\u4FDD\u7559\uFF09");
+        new Notice("\u274C \u8FC1\u79FB\u5931\u8D25");
       }
-      this.onComplete();
-      this.close();
-    } else {
+    } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）：迁移冲突 → 弹冲突解决，本 modal 保持打开可重试
+      if (error instanceof SyncConflictError) {
+        new Notice("\u26A0\uFE0F \u8FC1\u79FB\u65F6\u68C0\u6D4B\u5230\u540C\u6B65\u51B2\u7A81\uFF0C\u8BF7\u5148\u89E3\u51B3\u51B2\u7A81");
+        const conflictInfo = this.provider.getConflictInfo();
+        if (conflictInfo) {
+          new ConflictResolutionModal(this.app, this.provider, conflictInfo, () => {
+            new Notice("\u2705 \u51B2\u7A81\u5DF2\u89E3\u51B3\uFF0C\u53EF\u91CD\u65B0\u70B9\u51FB\u8FC1\u79FB");
+          }).open();
+        }
+        return;
+      }
+      console.error("Migration failed:", error);
       new Notice("\u274C \u8FC1\u79FB\u5931\u8D25");
     }
   }
@@ -357,6 +485,9 @@ export class MigrationModal extends Modal {
   }
 };
 export class ConflictResolutionModal extends Modal {
+  provider: any;
+  conflictInfo: any;
+  onResolved: any;
   constructor(app, provider, conflictInfo, onResolved) {
     super(app);
     this.provider = provider;
