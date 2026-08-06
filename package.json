@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-secret-storage-plugin",
-	"version": "1.0.0",
+	"version": "1.0.2",
 	"description": "演示如何使用 Obsidian SecretStorage API 安全存储 API 密钥等敏感信息的 Obsidian 插件",
 	"main": "main.js",
 	"type": "module",
