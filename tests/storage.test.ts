@@ -23,9 +23,11 @@ import { cryptoService } from "../src/crypto";
 import { installLocalStorageStub, createMemoryAdapter, createMockApp } from "./helpers";
 
 const PASSWORD = "test-password-123456!";
+const VAULT_DIR = "SecretStorage";
 const PLUGIN_DIR = ".obsidian/plugins/secret-storage-demo";
-const VAULT_PATH = `${PLUGIN_DIR}/secrets.enc`;
-const BACKUP_DIR = `${PLUGIN_DIR}/backups`;
+const VAULT_PATH = `${VAULT_DIR}/secrets.enc`;
+const BACKUP_DIR = `${VAULT_DIR}/backups`;
+const LEGACY_VAULT_PATH = `${PLUGIN_DIR}/secrets.enc`;
 
 function createProvider(app, opts = {}) {
   const provider = new SyncStorageProvider(app, 0);
@@ -119,9 +121,10 @@ describe("SyncStorageProvider 基础", () => {
     expect(second).toBe(first);
   });
 
-  it("路径生成正确", () => {
+  it("路径生成正确（新路径在 vault 根目录，可被 Obsidian Sync 同步）", () => {
     expect(provider.getPluginDir()).toBe(PLUGIN_DIR);
     expect(provider.getVaultPath()).toBe(VAULT_PATH);
+    expect(provider.getLegacyVaultPath()).toBe(LEGACY_VAULT_PATH);
     expect(provider.getBackupDir()).toBe(BACKUP_DIR);
   });
 
@@ -168,6 +171,24 @@ describe("SyncStorageProvider 基础", () => {
     };
     const result = await provider.initialize(PASSWORD);
     expect(result).toEqual({ ok: false, reason: "error" });
+  });
+
+  it("isInitialized：旧路径存在（1.0.2 存量库）也算已初始化", async () => {
+    adapter._set(LEGACY_VAULT_PATH, "{}");
+    expect(await provider.isInitialized()).toBe(true);
+    expect(await provider.getState()).toBe(VaultState.LOCKED);
+  });
+
+  it("unlock：旧路径读取并自动迁移到新路径", async () => {
+    const vault = await cryptoService.createEncryptedVault(PASSWORD, { k1: "v1" }, "device-A");
+    adapter._set(LEGACY_VAULT_PATH, JSON.stringify(vault));
+
+    expect(await provider.unlock(PASSWORD)).toBe(true);
+    expect(provider.secrets).toEqual({ k1: "v1" });
+    // 自动迁移：新路径已写入且内容一致
+    expect(adapter._get(VAULT_PATH)).toBe(JSON.stringify(vault));
+    // 旧文件保留，便于回滚
+    expect(adapter._get(LEGACY_VAULT_PATH)).toBe(JSON.stringify(vault));
   });
 
   it("unlock 成功加载密钥", async () => {
@@ -578,17 +599,27 @@ describe("备份、改密与痕迹检测", () => {
     expect(await provider.hasAnyVaultTraces()).toBe(false);
   });
 
-  it("hasAnyVaultTraces：backups/ 含 *.enc → true（规则 1）", async () => {
+  it("hasAnyVaultTraces：旧路径主文件存在 → true（规则 1，1.0.2 存量库）", async () => {
+    adapter._set(LEGACY_VAULT_PATH, "{}");
+    expect(await provider.hasAnyVaultTraces()).toBe(true);
+  });
+
+  it("hasAnyVaultTraces：backups/ 含 *.enc → true（规则 2）", async () => {
     adapter._set(`${BACKUP_DIR}/secrets.2026-01-01.enc`, "{}");
     expect(await provider.hasAnyVaultTraces()).toBe(true);
   });
 
-  it("hasAnyVaultTraces：插件目录内 conflicted copy → true（规则 2）", async () => {
+  it("hasAnyVaultTraces：旧插件目录 backups/ 含 *.enc → true（规则 2）", async () => {
+    adapter._set(`${PLUGIN_DIR}/backups/secrets.2026-01-01.enc`, "{}");
+    expect(await provider.hasAnyVaultTraces()).toBe(true);
+  });
+
+  it("hasAnyVaultTraces：插件目录内 conflicted copy → true（规则 3）", async () => {
     adapter._set(`${PLUGIN_DIR}/secrets (conflicted copy 2026-08-06 12:00:00).enc`, "{}");
     expect(await provider.hasAnyVaultTraces()).toBe(true);
   });
 
-  it("hasAnyVaultTraces：仅主文件 → false", async () => {
+  it("hasAnyVaultTraces：仅新路径主文件 → false", async () => {
     adapter._set(VAULT_PATH, "{}");
     expect(await provider.hasAnyVaultTraces()).toBe(false);
   });

@@ -17,7 +17,7 @@ Secret Storage Demo 为 Obsidian 提供一套独立的密钥管理方案：既�
 
 - **双存储模式**
   - **本地模式**：调用 Obsidian 内置 `app.secretStorage`，存储于操作系统安全存储（macOS Keychain / Windows Credential Manager / Linux Secret Service），不随 vault 同步。
-  - **同步模式**：将密钥以 `AES-256-GCM` 加密写入 `secrets.enc` 文件，可用 remotely-save 等同步插件跨设备共享。
+  - **同步模式**：将密钥以 `AES-256-GCM` 加密写入 vault 根目录 `SecretStorage/secrets.enc`，可随 **Obsidian Sync**（需开启「同步所有其他类型文件」，见下方说明）或 remotely-save 等同步工具跨设备共享。
 - **强加密**
   - `PBKDF2-SHA256` 派生密钥，**310,000 次迭代**（符合 OWASP 2023 推荐）。
   - `AES-256-GCM` 认证加密，随机 16 字节盐 + 12 字节 IV。
@@ -48,7 +48,7 @@ Secret Storage Demo 为 Obsidian 提供一套独立的密钥管理方案：既�
 
 | 维度 | 本地模式 (local) | 同步模式 (sync) |
 | --- | --- | --- |
-| 底层存储 | 操作系统安全存储 | `secrets.enc` 加密文件 |
+| 底层存储 | 操作系统安全存储 | `SecretStorage/secrets.enc` 加密文件（vault 根目录） |
 | 加密 | 由 OS 负责 | AES-256-GCM + PBKDF2 |
 | 主密码 | 不需要 | 需要（解锁、修改） |
 | 跨设备同步 | ❌ 不可同步 | ✅ 可随 vault 同步 |
@@ -171,15 +171,18 @@ secret-storage-demo/
 ├── versions.json        # 版本兼容映射
 ├── main.js              # 构建产物（⚠️ 已 gitignore，由 CI 生成）
 ├── data.json            # 插件设置（已 gitignore，由 Obsidian 管理）
-├── secrets.enc          # 同步模式加密密钥库（已 gitignore，个人数据）
-├── backups/             # 历史备份（已 gitignore）
-│   └── secrets.<timestamp>.enc
+├── SecretStorage/       # 同步模式密钥库目录（⚠️ 运行时生成，个人数据）
+│   ├── secrets.enc      # 加密密钥库（v1.2 起位于 vault 根目录，可被 Obsidian Sync 同步）
+│   └── backups/         # 历史备份
+│       └── secrets.<timestamp>.enc
 └── .gitignore
 ```
 
-> ⚠️ `main.js` 为构建产物；`secrets.enc`、`backups/`、`data.json` 为个人/本地数据——均已加入 `.gitignore`，不进入版本库。
+> ⚠️ `main.js` 为构建产物；`SecretStorage/`（`secrets.enc`、`backups/`）、`data.json` 为个人/本地数据——均已加入 `.gitignore`，不进入版本库。
 
-### `secrets.enc` 文件格式（同步模式）
+> 📌 **v1.2 路径变更**：1.0.2 及更早版本的密钥库位于 `.obsidian/plugins/secret-storage-demo/secrets.enc`（插件目录）。因 Obsidian Sync 对插件目录采用文件名白名单（仅同步 data.json/main.js/manifest.json/styles.css），该文件不会被同步，v1.2 起迁移至 vault 根目录 `SecretStorage/`。旧位置文件会在**解锁时自动迁移**，无需手动操作。
+
+### `SecretStorage/secrets.enc` 文件格式（同步模式）
 
 ```jsonc
 {
@@ -204,7 +207,8 @@ secret-storage-demo/
 - **密码强度门槛**：最少 12 位，且强度评分需 ≥ 2（综合长度、字符种类、常见弱模式判定）。
 - **内存中的密钥**：同步模式锁定后会立即清空内存中的密钥与密码；本地模式则依赖 OS 安全存储的解锁状态。
 - **自动锁定**：建议启用，避免长时间保持解锁状态。
-- **同步风险**：`secrets.enc` 可被同步到云端，但其内容已用 AES-256-GCM 加密，攻击者拿到文件仍需主密码。请确保主密码本身不与 vault 一起同步或明文存放。
+- **同步风险**：`SecretStorage/secrets.enc` 可被同步到云端，但其内容已用 AES-256-GCM 加密，攻击者拿到文件仍需主密码。请确保主密码本身不与 vault 一起同步或明文存放。
+- **Obsidian Sync 使用前提（v1.2）**：密钥库位于 vault 根目录 `SecretStorage/`（属「其他类型文件」），需在**每台设备**的设置 → 同步 → 选择性同步中开启「**同步所有其他类型文件**」并重启 Obsidian。`SecretStorage` 不要加入「需要排除的文件夹」。
 - **剪贴板**：点击复制会将密钥写入系统剪贴板，请注意剪贴板被其他程序读取的风险。
 
 > ⚠️ 本插件以 **demo** 为定位，旨在演示 Obsidian SecretStorage API 的用法。生产环境使用前请自行评估安全模型，并考虑硬件密钥 / 专用密码管理器等更严格方案。

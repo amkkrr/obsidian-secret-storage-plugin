@@ -240,7 +240,7 @@ P3 验收项补充：README「文档」节新增指向 `docs/RFC-001-sync-initia
 | D-2 | Major | 已修：痕迹检测删除规则 3（data.json，两条路径上恒真/恒假），仅保留规则 1/2；场景 A 预期同步修正 | §5.2、§6-A |
 | D-3 | Major | 已修：`save/delete/migrateFromLocal` 捕获后识别并重新抛出 `SyncConflictError`，UI 层（`saveSecret/deleteSecret`/`MigrationModal`）统一捕获弹窗 | §5.4、§5.5 |
 | D-4 | Medium | 已定案：v1 不做自动轮询，仅「立即重试」按钮；`waitForFile` 从 API 清单移除；§10 问题 2 关闭 | §5.2、§5.5、§10-2 |
-| E-1 | Medium | 已改：§2.2 表述弱化为「取决于所用同步工具」；§7 恢复提示改为「Sync 版本历史 / conflicted copy」两路径并列；新增未决问题 5（双设备实测） | §2.2、§7、§10-5 |
+| E-1 | Medium | 已实测确认（RFC v1.2 落地）：Obsidian Sync 对 `.obsidian/plugins/` 采用文件名白名单（仅 data.json/main.js/manifest.json/styles.css），`secrets.enc` 在插件目录内**永不同步**（开启「同步所有其他类型文件」亦无效）→ 密钥库文件迁移至 vault 根目录 `SecretStorage/`，旧路径解锁时自动迁移；§2.2 冲突机制（last-modified-wins / JSON 合并）、§11 设置核对项按官方文档重写 | §2.2、§5.2、§11、README |
 | F-1 | Major | 已修：§9 新增「P0-pre：vitest + adapter mock 基建」阶段；§8 单测补充 D-1 豁免回归与 D-3 契约用例 | §8、§9 |
 | B-1 | Medium | 已修：README 新增「📚 文档」节，链接 RFC 与审计 | README.md |
 | H-1 | Medium | 暂不处理：单文档项目，未引入 AGENTS.md（若后续持续产出规格文档再行补齐） | — |

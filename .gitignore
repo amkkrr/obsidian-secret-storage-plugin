@@ -14,10 +14,11 @@ main.js
 # sourcemap
 *.map
 
-# 备份目录（个人数据）
-backups/
+# 个人加密密钥库（v1.2 起位于 vault 根目录 SecretStorage/）
+SecretStorage/
 
-# 个人加密密钥库（个人数据）
+# 旧版备份目录与密钥库（1.0.2 及更早，插件目录内）
+backups/
 secrets.enc
 
 # 插件本地设置（Obsidian 按用户本地生成）
