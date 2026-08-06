@@ -1,7 +1,35 @@
 import { Notice } from "obsidian";
 import { cryptoService } from "./crypto";
 
+// ============================================
+// 错误类型与状态模型（RFC-001 §5.1 / §5.4）
+// ============================================
+/**
+ * 同步冲突错误：persistSecrets 检测到 remote-newer / conflict 时抛出。
+ * 由 UI 层（main.ts saveSecret/deleteSecret、MigrationModal）捕获后弹出
+ * ConflictResolutionModal（RFC-001 §5.4，审计 D-3）。
+ */
+export class SyncConflictError extends Error {
+  constructor(message = "检测到同步冲突，拒绝写入") {
+    super(message);
+    this.name = "SyncConflictError";
+  }
+}
+
+/**
+ * 密钥库状态（RFC-001 §5.1）
+ * - uninitialized: 文件不存在
+ * - locked:       文件存在，unlocked === false
+ * - unlocked:     文件存在，unlocked === true
+ */
+export const VaultState = {
+  UNINITIALIZED: "uninitialized",
+  LOCKED: "locked",
+  UNLOCKED: "unlocked"
+};
+
 export class LocalStorageProvider {
+  app: any;
   constructor(app) {
     this.app = app;
   }
@@ -47,6 +75,36 @@ export class LocalStorageProvider {
   }
 };
 export class SyncStorageProvider {
+  // 运行时状态
+  unlocked: boolean;
+  secrets: any;
+  vault: any;
+  encryptionKey: any;
+  password: any;
+  // 自动锁定定时器
+  lockTimer: any;
+  autoLockTimeout: number;
+  // 文件路径
+  VAULT_FILE: string;
+  BACKUP_DIR: string;
+  // 冲突状态
+  conflictRemoteVault: any;
+  conflictRemoteSecrets: any;
+  conflictCallback: any;
+  app: any;
+  crypto: any;
+  deviceId: string;
+  // 冲突检测结果类型（Phase 4.3, 4.4）
+  static ConflictType = {
+    NONE: "none",
+    // 无冲突
+    LOCAL_NEWER: "local-newer",
+    // 本地版本更新
+    REMOTE_NEWER: "remote-newer",
+    // 远程版本更新
+    CONFLICT: "conflict"
+    // 真正的冲突（不同设备同时修改）
+  };
   constructor(app, autoLockMinutes = 30) {
     // 运行时状态
     this.unlocked = false;
@@ -112,10 +170,32 @@ export class SyncStorageProvider {
     }
   }
   /**
+   * 获取密钥库状态（RFC-001 §5.1，审计无发现）
+   * 文件存在性为异步查询，故 getState 为 async（设计文档中的同步签名按实现妥协）。
+   */
+  async getState() {
+    const exists = await this.isInitialized();
+    if (!exists) {
+      return VaultState.UNINITIALIZED;
+    }
+    return this.unlocked ? VaultState.UNLOCKED : VaultState.LOCKED;
+  }
+  /**
    * 初始化密钥库（首次设置密码）
+   */
+  /**
+   * 初始化密钥库（首次设置密码）
+   * 返回区分性结果（RFC-001 §5.2，审计 G-1）：
+   * - { ok: true }                             创建成功
+   * - { ok: false, reason: "already-exists" }  目标文件已被创建（同步竞态）→ 应引导解锁
+   * - { ok: false, reason: "error" }           其他失败
    */
   async initialize(password) {
     try {
+      // 写前保护（RFC-001 §5.2，防 §2.3.4 竞态）：exists/write 之间仍有毫秒级窗口（审计 C-1）
+      if (await this.app.vault.adapter.exists(this.getVaultPath())) {
+        return { ok: false, reason: "already-exists" };
+      }
       const vault = await this.crypto.createEncryptedVault(password, {}, this.deviceId);
       const pluginDir = this.getPluginDir();
       if (!await this.app.vault.adapter.exists(pluginDir)) {
@@ -130,10 +210,10 @@ export class SyncStorageProvider {
       this.password = password;
       this.unlocked = true;
       this.resetLockTimer();
-      return true;
+      return { ok: true };
     } catch (error) {
       console.error("SyncStorageProvider initialize error:", error);
-      return false;
+      return { ok: false, reason: "error" };
     }
   }
   /**
@@ -199,6 +279,10 @@ export class SyncStorageProvider {
       this.resetLockTimer();
       return true;
     } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）：SyncConflictError 上抛给 UI 层，其余吞掉返回 false
+      if (error instanceof SyncConflictError) {
+        throw error;
+      }
       console.error("SyncStorageProvider save error:", error);
       return false;
     }
@@ -237,16 +321,30 @@ export class SyncStorageProvider {
       this.resetLockTimer();
       return true;
     } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）
+      if (error instanceof SyncConflictError) {
+        throw error;
+      }
       console.error("SyncStorageProvider delete error:", error);
       return false;
     }
   }
   /**
    * 持久化密钥到文件
+   * @param {Object} [options]
+   * @param {boolean} [options.skipConflictCheck=false] 冲突解决路径显式豁免
+   *   （RFC-001 §5.4，审计 D-1）：resolveConflictWithLocal/WithMerge 传 true，
+   *   避免「使用本地/合并」因旧内存版本被判 conflict 而死锁。
    */
-  async persistSecrets() {
+  async persistSecrets({ skipConflictCheck = false } = {}) {
     if (!this.vault || !this.password) {
       throw new Error("Vault not initialized");
+    }
+    if (!skipConflictCheck) {
+      const { canSave } = await this.checkBeforeSave();
+      if (!canSave) {
+        throw new SyncConflictError();
+      }
     }
     await this.createBackup();
     const updatedVault = await this.crypto.updateEncryptedVault(
@@ -341,6 +439,40 @@ export class SyncStorageProvider {
     return "sync";
   }
   /**
+   * 痕迹检测（RFC-001 §5.2，审计 D-2）：本 vault 是否存在密码库痕迹
+   * 规则 1：backups/ 目录存在且含 *.enc 文件（storage.ts:270-283 生成的备份）
+   * 规则 2：插件目录内存在其他 *.enc 文件（basename ≠ secrets.enc，如 conflicted copy）
+   */
+  async hasAnyVaultTraces() {
+    try {
+      const pluginDir = this.getPluginDir();
+      if (!await this.app.vault.adapter.exists(pluginDir)) {
+        return false;
+      }
+      const isMainFile = (p) => String(p).split("/").pop() === this.VAULT_FILE;
+      // 规则 1：备份痕迹
+      const backupDir = this.getBackupDir();
+      if (await this.app.vault.adapter.exists(backupDir)) {
+        const backupListing = await this.app.vault.adapter.list(backupDir);
+        if (backupListing && Array.isArray(backupListing.files) &&
+          backupListing.files.some((f) => f.endsWith(".enc"))) {
+          return true;
+        }
+      }
+      // 规则 2：插件目录内其他 *.enc（如 conflicted copy）
+      const listing = await this.app.vault.adapter.list(pluginDir);
+      if (listing && Array.isArray(listing.files)) {
+        if (listing.files.some((f) => f.endsWith(".enc") && !isMainFile(f))) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      console.error("Trace detection failed:", e);
+      return false;
+    }
+  }
+  /**
    * 获取密钥库信息
    */
   getVaultInfo() {
@@ -373,6 +505,10 @@ export class SyncStorageProvider {
       await this.persistSecrets();
       return true;
     } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）
+      if (error instanceof SyncConflictError) {
+        throw error;
+      }
       console.error("Migration failed:", error);
       return false;
     }
@@ -462,7 +598,8 @@ export class SyncStorageProvider {
       return false;
     }
     try {
-      await this.persistSecrets();
+      // 豁免冲突检查（RFC-001 §5.4，审计 D-1）：用户已显式选择保留本地版本
+      await this.persistSecrets({ skipConflictCheck: true });
       this.clearConflictState();
       return true;
     } catch (error) {
@@ -523,7 +660,8 @@ export class SyncStorageProvider {
         }
       }
       this.secrets = mergedSecrets;
-      await this.persistSecrets();
+      // 豁免冲突检查（RFC-001 §5.4，审计 D-1）：用户已显式选择合并
+      await this.persistSecrets({ skipConflictCheck: true });
       this.clearConflictState();
       return true;
     } catch (error) {
@@ -569,19 +707,7 @@ export class SyncStorageProvider {
 // ============================================
 // 冲突检测与解决 (Phase 4.3, 4.4)
 // ============================================
-/**
- * 冲突检测结果类型
- */
-SyncStorageProvider.ConflictType = {
-  NONE: "none",
-  // 无冲突
-  LOCAL_NEWER: "local-newer",
-  // 本地版本更新
-  REMOTE_NEWER: "remote-newer",
-  // 远程版本更新
-  CONFLICT: "conflict"
-  // 真正的冲突（不同设备同时修改）
-};
+// ConflictType 常量已移至 SyncStorageProvider 类内静态声明（见类头）
 export function createStorageProvider(app, mode, autoLockMinutes = 30) {
   if (mode === "sync") {
     return new SyncStorageProvider(app, autoLockMinutes);

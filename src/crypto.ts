@@ -1,4 +1,12 @@
 export class CryptoService {
+  // OWASP 2023 推荐的 PBKDF2 迭代次数
+  static ITERATIONS = 31e4;
+  static KEY_LENGTH = 256;
+  static SALT_LENGTH = 16;
+  // 128 bits
+  static IV_LENGTH = 12;
+  // 96 bits (GCM 推荐)
+  static VERIFIER_PLAINTEXT = "obsidian-secret-storage-v2";
   /**
    * 生成随机盐值
    */
@@ -239,12 +247,6 @@ export class CryptoService {
   }
 };
 // OWASP 2023 推荐的 PBKDF2 迭代次数
-CryptoService.ITERATIONS = 31e4;
-CryptoService.KEY_LENGTH = 256;
-CryptoService.SALT_LENGTH = 16;
-// 128 bits
-CryptoService.IV_LENGTH = 12;
-// 96 bits (GCM 推荐)
-CryptoService.VERIFIER_PLAINTEXT = "obsidian-secret-storage-v2";
+// （静态属性已声明于类内，见 CryptoService 类头）
 export const cryptoService = new CryptoService();
 

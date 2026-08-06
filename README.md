@@ -6,6 +6,13 @@ Secret Storage Demo 为 Obsidian 提供一套独立的密钥管理方案：既�
 
 ---
 
+## 📚 文档
+
+- **[RFC-001: 同步模式初始化流程修复](docs/RFC-001-sync-initialization.md)** — 多设备场景下误建 / 覆盖密码库问题的设计与验收标准（含修订历史）。
+- **[AUDIT-0001: RFC-001 实施就绪性审计](docs/audits/AUDIT-0001-rfc-001-sync-initialization-2026-08-06.md)** — 上述 RFC 的审计报告与修订处置记录。
+
+---
+
 ## ✨ 功能特性
 
 - **双存储模式**

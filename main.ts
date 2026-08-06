@@ -1,6 +1,6 @@
 import { Plugin, Notice, MarkdownView, Modal, Setting, PluginSettingTab } from "obsidian";
-import { createStorageProvider, LocalStorageProvider, SyncStorageProvider } from "./src/storage";
-import { SetupPasswordModal, UnlockModal, ChangePasswordModal, MigrationModal, ConflictResolutionModal } from "./src/ui";
+import { createStorageProvider, LocalStorageProvider, SyncStorageProvider, SyncConflictError } from "./src/storage";
+import { SetupPasswordModal, UnlockModal, ChangePasswordModal, MigrationModal, ConflictResolutionModal, VaultNotFoundModal } from "./src/ui";
 
 const DEFAULT_SETTINGS = {
   showNotifications: true,
@@ -13,6 +13,8 @@ const DEFAULT_SETTINGS = {
 };
 const SECRET_PLACEHOLDER_REGEX = /\{\{secret:([a-z0-9-]+)\}\}/g;
 export default class SecretStorageDemoPlugin extends Plugin {
+  settings: any;
+  storageProvider: any;
   async onload() {
     await this.loadSettings();
     await this.initStorageProvider();
@@ -181,30 +183,34 @@ export default class SecretStorageDemoPlugin extends Plugin {
     if (newMode === "sync") {
       const syncProvider = new SyncStorageProvider(this.app, this.settings.autoLockTimeout);
       const isInitialized = await syncProvider.isInitialized();
+      const applySyncMode = async () => {
+        this.storageProvider = syncProvider;
+        this.settings.storageMode = "sync";
+        await this.saveSettings();
+        new Notice("✅ 已切换到同步模式");
+      };
+      const onCreated = async () => {
+        const localSecrets = await this.getLocalSecretsMap();
+        if (Object.keys(localSecrets).length > 0) {
+          new MigrationModal(this.app, syncProvider, localSecrets, applySyncMode).open();
+        } else {
+          await applySyncMode();
+        }
+      };
       if (!isInitialized) {
-        new SetupPasswordModal(this.app, syncProvider, async () => {
-          const localSecrets = await this.getLocalSecretsMap();
-          if (Object.keys(localSecrets).length > 0) {
-            new MigrationModal(this.app, syncProvider, localSecrets, () => {
-              this.storageProvider = syncProvider;
-              this.settings.storageMode = "sync";
-              this.saveSettings();
-              new Notice("\u2705 \u5DF2\u5207\u6362\u5230\u540C\u6B65\u6A21\u5F0F");
-            }).open();
-          } else {
-            this.storageProvider = syncProvider;
-            this.settings.storageMode = "sync";
-            this.saveSettings();
-            new Notice("\u2705 \u5DF2\u5207\u6362\u5230\u540C\u6B65\u6A21\u5F0F");
+        // RFC-001 §5.2：文件不存在 → VaultNotFoundModal（显式确认 + 痕迹检测 + 二次确认），
+        // 不再直接弹 SetupPasswordModal，防止第二台设备误建空库覆盖远端
+        new VaultNotFoundModal(this.app, syncProvider, {
+          onCreated,
+          onUnlocked: applySyncMode,
+          onCancel: () => {
+            // 审计次要观察：取消时设置页 dropdown 由 display() 重绘回实际 settings
+            new Notice("已取消切换到同步模式");
           }
         }).open();
       } else {
-        new UnlockModal(this.app, syncProvider, async () => {
-          this.storageProvider = syncProvider;
-          this.settings.storageMode = "sync";
-          this.saveSettings();
-          new Notice("\u2705 \u5DF2\u5207\u6362\u5230\u540C\u6B65\u6A21\u5F0F");
-        }).open();
+        // RFC-001 §5.3：解锁分支与 ensureUnlocked 一致（解锁后做冲突检查）
+        this.unlockWithConflictCheck(syncProvider, applySyncMode);
       }
     } else {
       this.storageProvider = new LocalStorageProvider(this.app);
@@ -243,13 +249,24 @@ export default class SecretStorageDemoPlugin extends Plugin {
     }
     syncProvider.isInitialized().then((initialized) => {
       if (!initialized) {
-        new SetupPasswordModal(this.app, syncProvider, callback).open();
-      } else {
-        new UnlockModal(this.app, syncProvider, () => {
-          this.checkAndHandleConflict(syncProvider, callback);
+        // RFC-001 §5.2：文件不存在 → VaultNotFoundModal，不再直接弹 SetupPasswordModal
+        new VaultNotFoundModal(this.app, syncProvider, {
+          onCreated: callback,
+          onUnlocked: callback
         }).open();
+      } else {
+        this.unlockWithConflictCheck(syncProvider, callback);
       }
     });
+  }
+  /**
+   * 解锁 + 冲突检查公共流程（RFC-001 §5.3）：switchStorageMode 与 ensureUnlocked 共用，
+   * 避免两处入口再次分叉
+   */
+  unlockWithConflictCheck(syncProvider, onSuccess) {
+    new UnlockModal(this.app, syncProvider, () => {
+      this.checkAndHandleConflict(syncProvider, onSuccess);
+    }).open();
   }
   /**
    * 检查并处理同步冲突
@@ -283,6 +300,23 @@ export default class SecretStorageDemoPlugin extends Plugin {
           callback();
         }
         break;
+    }
+  }
+  /**
+   * 冲突错误统一处理（RFC-001 §5.4，审计 D-3）：
+   * 弹出 ConflictResolutionModal，或提示「远端已有更新，请先刷新」
+   */
+  promptConflictResolution() {
+    const syncProvider = this.storageProvider;
+    const conflictInfo = syncProvider.getConflictInfo();
+    if (conflictInfo) {
+      new ConflictResolutionModal(this.app, syncProvider, conflictInfo, (resolution) => {
+        if (resolution !== "cancel") {
+          new Notice(`✅ 冲突已解决 (${resolution})`);
+        }
+      }).open();
+    } else {
+      new Notice("⚠️ 远端已有更新，请先刷新");
     }
   }
   /**
@@ -340,12 +374,22 @@ export default class SecretStorageDemoPlugin extends Plugin {
       new Notice("\u274C \u5BC6\u94A5ID\u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u77ED\u6A2A\u7EBF");
       return false;
     }
-    const success = await this.storageProvider.save(id, secret);
-    if (success && this.settings.showNotifications) {
-      const modeText = this.settings.storageMode === "sync" ? "\u540C\u6B65\u5BC6\u94A5\u5E93" : "\u7CFB\u7EDF\u94A5\u5319\u4E32";
-      new Notice(`\u2705 \u5BC6\u94A5 "${id}" \u5DF2\u4FDD\u5B58\u5230${modeText}`);
+    try {
+      const success = await this.storageProvider.save(id, secret);
+      if (success && this.settings.showNotifications) {
+        const modeText = this.settings.storageMode === "sync" ? "\u540C\u6B65\u5BC6\u94A5\u5E93" : "\u7CFB\u7EDF\u94A5\u5319\u4E32";
+        new Notice(`\u2705 \u5BC6\u94A5 "${id}" \u5DF2\u4FDD\u5B58\u5230${modeText}`);
+      }
+      return success;
+    } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）：冲突 → 弹出冲突解决
+      if (error instanceof SyncConflictError) {
+        this.promptConflictResolution();
+        return false;
+      }
+      console.error("saveSecret error:", error);
+      return false;
     }
-    return success;
   }
   /**
    * 获取密钥
@@ -363,11 +407,21 @@ export default class SecretStorageDemoPlugin extends Plugin {
    * 删除密钥
    */
   async deleteSecret(id) {
-    const success = await this.storageProvider.delete(id);
-    if (success && this.settings.showNotifications) {
-      new Notice(`\u{1F5D1}\uFE0F \u5BC6\u94A5 "${id}" \u5DF2\u5220\u9664`);
+    try {
+      const success = await this.storageProvider.delete(id);
+      if (success && this.settings.showNotifications) {
+        new Notice(`\u{1F5D1}\uFE0F \u5BC6\u94A5 "${id}" \u5DF2\u5220\u9664`);
+      }
+      return success;
+    } catch (error) {
+      // 错误传播契约（RFC-001 §5.4，审计 D-3）
+      if (error instanceof SyncConflictError) {
+        this.promptConflictResolution();
+        return false;
+      }
+      console.error("deleteSecret error:", error);
+      return false;
     }
-    return success;
   }
   /**
    * 列出并显示所有密钥
@@ -499,6 +553,8 @@ ${secrets.join("\n")}`);
   }
 };
 class InsertPlaceholderModal extends Modal {
+  plugin: any;
+  editor: any;
   constructor(app, plugin, editor) {
     super(app);
     this.plugin = plugin;
@@ -540,6 +596,10 @@ class InsertPlaceholderModal extends Modal {
   }
 };
 class ReplaceWithSecretModal extends Modal {
+  plugin: any;
+  editor: any;
+  selectedText: any;
+  idInput: any;
   constructor(app, plugin, editor, selectedText) {
     super(app);
     this.plugin = plugin;
@@ -599,7 +659,11 @@ class ReplaceWithSecretModal extends Modal {
   }
 };
 class SaveSecretModal extends Modal {
-  constructor(app, plugin, onSaveSuccess) {
+  plugin: any;
+  onSaveSuccess: any;
+  idInput: any;
+  secretInput: any;
+  constructor(app, plugin, onSaveSuccess = null) {
     super(app);
     this.plugin = plugin;
     this.onSaveSuccess = onSaveSuccess;
@@ -637,6 +701,7 @@ class SaveSecretModal extends Modal {
   }
 };
 class GetSecretModal extends Modal {
+  plugin: any;
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -674,6 +739,7 @@ ${secret}`, 5e3);
   }
 };
 class DeleteSecretModal extends Modal {
+  plugin: any;
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -702,6 +768,7 @@ class DeleteSecretModal extends Modal {
   }
 };
 class SecretManagerModal extends Modal {
+  plugin: any;
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -763,6 +830,9 @@ class SecretManagerModal extends Modal {
   }
 };
 class SecretStorageSettingTab extends PluginSettingTab {
+  plugin: any;
+  secretSectionEl: any;
+  editingId: any;
   constructor(app, plugin) {
     super(app, plugin);
     // 密钥管理区块引用，用于局部刷新
@@ -1000,6 +1070,8 @@ class SecretStorageSettingTab extends PluginSettingTab {
   }
 };
 class ConfirmDeleteModal extends Modal {
+  secretId: any;
+  onConfirm: any;
   constructor(app, secretId, onConfirm) {
     super(app);
     this.secretId = secretId;
