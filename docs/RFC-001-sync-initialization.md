@@ -4,8 +4,8 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 状态 | Revised（已按 AUDIT-0001 修订，待复审） |
-| 日期 | 2026-08-06（初稿）/ 2026-08-06（修订 v1.1） |
+| 状态 | Implemented（v1.0.2 已实施发布；v1.2 关键事实修正） |
+| 日期 | 2026-08-06（初稿）/ 2026-08-06（修订 v1.1）/ 2026-08-06（修订 v1.2） |
 | 作者 | pi（代笔，基于代码审查） |
 | 关联模块 | `main.ts` / `src/storage.ts` / `src/ui.ts` |
 | 影响版本 | 1.0.1 及后续 |
@@ -18,13 +18,15 @@
 | --- | --- | --- |
 | v1.0（初稿） | 2026-08-06 | 首次提交评审 |
 | v1.1（本次） | 2026-08-06 | 按 [AUDIT-0001](../audits/AUDIT-0001-rfc-001-sync-initialization-2026-08-06.md) 修订：D-1 冲突解决豁免、D-2 痕迹检测规则重定义、D-3 错误传播契约、D-4 轮询定案、E-1 证据表述弱化、F-1 测试基建、G-1 初始化区分性结果、C-1 残余风险声明、B-1 文档链接、行号刷新 |
+| v1.2（本次） | 2026-08-06 | 关键事实修正（审计 E-1 结论落地，双设备实测确认）：Obsidian Sync 对 `.obsidian/plugins/` 采用**文件名白名单**（仅 data.json/main.js/manifest.json/styles.css），`secrets.enc` 在插件目录内**永不同步** → 密钥库文件移至 vault 根目录 `SecretStorage/`；新增旧路径（1.0.2 及更早）自动迁移与痕迹检测规则；§2.2 冲突机制、§11 设置核对项按官方文档重写 |
 
 ---
 
 ## 1. 摘要
 
 `SyncStorageProvider`（同步模式）把加密密钥库写入 vault 内固定路径
-`<vault>/.obsidian/plugins/secret-storage-demo/secrets.enc`，依赖 Obsidian Sync /
+`<vault>/SecretStorage/secrets.enc`（vault 根目录，v1.2 起从插件目录迁移——插件
+目录被 Obsidian Sync 白名单机制排除，见 §2.2），依赖 Obsidian Sync /
 remotely-save 等外部工具把文件镜像到其他设备。当前实现把**「文件不存在」无条件
 解释为「首次使用」**，导致第二台设备在同步文件尚未到达时，插件直接弹出「设置主
 密码」引导用户创建**全新空密码库**，进而覆盖/分裂第一台设备的既有密码库。
@@ -66,15 +68,23 @@ async isInitialized() {
 ### 2.2 数据丢失风险
 
 用户若在第二台设备继续完成 `SetupPasswordModal.handleSetup()`（`src/ui.ts:122`），
-`provider.initialize(password)`（`src/storage.ts:117-138`）会用新 `deviceId`、新
+`provider.initialize(password)`（`src/storage.ts`）会用新 `deviceId`、新
 `lastModified` 写入一个全新空 `secrets.enc`。随后同步工具在两端做冲突处理
 （**具体行为取决于所用同步工具**，见 E-1 处置与 §10 问题 5）：
 
-- 非 markdown 文件不会自动合并：Obsidian Sync 倾向保留版本历史（可从 Sync 版本
-  历史手动恢复）；remotely-save 等第三方插件通常落地
-  `secrets (conflicted copy ...).enc` 文件（该断言为经验性描述，未经双设备实测）；
-- 插件只读固定路径 `secrets.enc`（`src/storage.ts:94-95`），冲突副本/版本历史中的
-  数据永远不会被插件读取；
+- **Obsidian Sync 的机制（2026-08-06 官方文档 + 双设备实测确认，v1.2 修正）：**
+  - 非 markdown 文件冲突时按 **last-modified-wins 直接覆盖**，不自动生成
+    conflicted copy（conflicted copy 仅在用户启用「创建冲突文件」选项时出现）；
+  - 插件设置类 JSON 冲突做**字段级合并**（本地键覆盖远程键）——对加密 vault 会
+    拼出无法解密的损坏文件；
+  - `.obsidian/plugins/` 目录采用**文件名白名单**：仅同步 `data.json`/
+    `main.js`/`manifest.json`/`styles.css`，自定义文件（如 `secrets.enc`）即使
+    开启「同步所有其他类型文件」也**永远不会被同步**——这是本插件 v1.2 把密钥库
+    移出插件目录至 vault 根目录 `SecretStorage/` 的直接原因；
+- remotely-save 等第三方文件级同步工具会同步所有文件（含 `.enc`），冲突时落地
+  `secrets (conflicted copy ...).enc` 副本；
+- 插件只读固定路径 `secrets.enc`（`src/storage.ts` `getVaultPath()`），冲突副本/
+  版本历史中的数据永远不会被插件读取；
 - 结果：无论同步工具采用哪种冲突处理方式，第一台设备的密钥从插件视角「消失」，
   且全程无任何警告。
 
@@ -163,8 +173,9 @@ VaultNotFoundModal（三选一）
 
 ```ts
 async hasAnyVaultTraces(): Promise<boolean> {
-  // 1. backups/ 目录存在且含 *.enc 文件（storage.ts:270-283 生成的备份）
-  // 2. 插件目录内存在其他 *.enc 文件（basename ≠ secrets.enc，如 conflicted copy）
+  // 1. 旧路径主文件存在（1.0.2 及更早的存量库，插件目录内）
+  // 2. 备份目录（新 SecretStorage/backups 或旧插件目录 backups）含 *.enc 文件
+  // 3. 插件目录内存在其他 *.enc 文件（basename ≠ secrets.enc，如 conflicted copy）
 }
 ```
 
@@ -275,7 +286,8 @@ async persistSecrets({ skipConflictCheck = false } = {}) {
 ### 5.6 UI 文案要点
 
 - `VaultNotFoundModal` 需说明两种可能（首次使用 / 同步未完成），并附「若这是新设备，
-  请先在 Obsidian Sync 设置中确认「同步所有其他类型文件」与「其他文件类型」已开启」。
+  请先在 Obsidian Sync 设置中确认「选择性同步 → 同步所有其他类型文件」已开启
+  （v1.2 起密钥库位于 vault 根目录 `SecretStorage/`，属其他类型文件，见 §11）」。
 - 创建新库按钮红色警示样式（复用 `.mod-warning`）。
 
 ## 6. 场景走查
@@ -320,7 +332,8 @@ async persistSecrets({ skipConflictCheck = false } = {}) {
 
 **手动验收**（对照 §6 场景矩阵 A–H）：
 
-- 两台设备 + Obsidian Sync（开启「同步所有其他类型文件」「其他文件类型」）。
+- 两台设备 + Obsidian Sync（每台设备均开启「选择性同步 → 同步所有其他类型文件」，
+  密钥库位于 vault 根目录 `SecretStorage/`，见 §11）。
 - 场景 C：确保不出现 SetupPasswordModal；VaultNotFoundModal 提供等待/重试。
 - 场景 G：双端同时保存，确认弹出冲突解决而非静默覆盖。
 
@@ -353,12 +366,23 @@ async persistSecrets({ skipConflictCheck = false } = {}) {
 
 ## 11. 附注：Obsidian Sync 设置核对项（配套文档）
 
-同步模式可用需用户在每台设备的 **设置 → 同步** 中确认：
+> **2026-08-06 重大修正（v1.2）**：旧版本节要求开启「同步配置文件 → 其他文件类型」
+> 等项，经双设备实测确认无效——Obsidian Sync 对 `.obsidian/plugins/` 目录采用
+> **文件名白名单**（仅同步 `data.json`/`main.js`/`manifest.json`/`styles.css`），
+> 自定义文件无论如何设置都不同步。v1.2 起密钥库文件移至 vault 根目录
+> `SecretStorage/`，以下为正确的设置核对项（每台设备需分别配置，变更后需重启
+> Obsidian 生效）：
 
-1. 选择性同步 → **同步所有其他类型文件**：开启（`secrets.enc` 属其他类型）。
-2. 同步配置文件 → **其他文件类型**：开启（覆盖插件数据文件）。
-3. 同步配置文件 → **第三方插件启用情况 / 已安装的社区插件列表**：开启（可选，
-   用于自动安装插件本体）。
-4. **需要排除的文件夹**：不得包含 `.obsidian` 或插件目录。
+1. **选择性同步 → 同步所有其他类型文件**：开启（`SecretStorage/secrets.enc` 位于
+   vault 根目录，属「其他类型文件」——默认只同步图片/音频/视频/PDF，此开关必须开）。
+2. **需要排除的文件夹**：不得包含 `SecretStorage`（默认无排除，无需改动）。
+3. 可选：同步配置文件 → **第三方插件启用情况 / 已安装的社区插件列表**（用于同步
+   插件本体与启用状态，与密钥库文件无关）。
 
-（官方依据：《Obsidian 帮助 · 同步设置》"选择性同步"与"始终被排除的内容"章节。）
+（官方依据：《Obsidian 帮助 · 同步设置》"选择性同步"与"始终被排除的内容"章节；
+插件目录白名单依据：官方论坛插件目录同步实测 + 2026-08-06 本插件双设备实测。）
+
+**Obsidian Sync 冲突行为提醒**（官方《故障排查 · 冲突解决》）：vault 根目录的
+非 markdown 文件（含 `secrets.enc`）冲突时按 **last-modified-wins 直接覆盖**；
+插件设置类 JSON 做字段级合并。插件内置的 deviceId/lastModified 冲突检测可在
+解锁/保存时发现覆盖并弹冲突解决（RFC §5.3/§5.4）。

@@ -84,7 +84,8 @@ export class SyncStorageProvider {
   // 自动锁定定时器
   lockTimer: any;
   autoLockTimeout: number;
-  // 文件路径
+  // 文件路径（vault 根目录，Obsidian Sync 可同步——插件目录内非白名单文件不会同步）
+  VAULT_DIR: string;
   VAULT_FILE: string;
   BACKUP_DIR: string;
   // 冲突状态
@@ -116,7 +117,9 @@ export class SyncStorageProvider {
     this.lockTimer = null;
     this.autoLockTimeout = 30 * 60 * 1e3;
     // 默认 30 分钟
-    // 文件路径
+    // 文件路径（vault 根目录；Obsidian Sync 对插件目录采用文件名白名单，
+    // 仅同步 data.json/main.js/manifest.json/styles.css，自定义文件须放 vault 根目录）
+    this.VAULT_DIR = "SecretStorage";
     this.VAULT_FILE = "secrets.enc";
     this.BACKUP_DIR = "backups";
     // 冲突状态
@@ -147,24 +150,44 @@ export class SyncStorageProvider {
     return `${this.app.vault.configDir}/plugins/secret-storage-demo`;
   }
   /**
-   * 获取密钥库文件路径
+   * 获取密钥库文件路径（vault 根目录 `SecretStorage/`，可被 Obsidian Sync 同步）
+   * 2026-08-06 修复：原路径在插件目录内，Obsidian Sync 对 `.obsidian/plugins/`
+   * 采用文件名白名单（仅 data.json/main.js/manifest.json/styles.css），
+   * secrets.enc 永不同步，故移至 vault 根目录（需开启「同步所有其他类型文件」）。
    */
   getVaultPath() {
+    return `${this.VAULT_DIR}/${this.VAULT_FILE}`;
+  }
+  /**
+   * 旧路径（1.0.2 及更早）：插件目录内 secrets.enc —— 仅用于兼容迁移与痕迹检测
+   */
+  getLegacyVaultPath() {
     return `${this.getPluginDir()}/${this.VAULT_FILE}`;
   }
   /**
    * 获取备份目录路径
    */
   getBackupDir() {
-    return `${this.getPluginDir()}/${this.BACKUP_DIR}`;
+    return `${this.VAULT_DIR}/${this.BACKUP_DIR}`;
+  }
+  /**
+   * 确保密钥库目录存在（vault 根目录）
+   */
+  async ensureVaultDir() {
+    if (!await this.app.vault.adapter.exists(this.VAULT_DIR)) {
+      await this.app.vault.adapter.mkdir(this.VAULT_DIR);
+    }
   }
   /**
    * 检查密钥库是否已初始化
    */
   async isInitialized() {
     try {
-      const exists = await this.app.vault.adapter.exists(this.getVaultPath());
-      return exists;
+      const [current, legacy] = await Promise.all([
+        this.app.vault.adapter.exists(this.getVaultPath()),
+        this.app.vault.adapter.exists(this.getLegacyVaultPath())
+      ]);
+      return current || legacy;
     } catch (e) {
       return false;
     }
@@ -193,14 +216,16 @@ export class SyncStorageProvider {
   async initialize(password) {
     try {
       // 写前保护（RFC-001 §5.2，防 §2.3.4 竞态）：exists/write 之间仍有毫秒级窗口（审计 C-1）
-      if (await this.app.vault.adapter.exists(this.getVaultPath())) {
+      // 新旧路径任一存在即拒绝创建（旧路径兼容 1.0.2 存量库）
+      const [currentExists, legacyExists] = await Promise.all([
+        this.app.vault.adapter.exists(this.getVaultPath()),
+        this.app.vault.adapter.exists(this.getLegacyVaultPath())
+      ]);
+      if (currentExists || legacyExists) {
         return { ok: false, reason: "already-exists" };
       }
       const vault = await this.crypto.createEncryptedVault(password, {}, this.deviceId);
-      const pluginDir = this.getPluginDir();
-      if (!await this.app.vault.adapter.exists(pluginDir)) {
-        await this.app.vault.adapter.mkdir(pluginDir);
-      }
+      await this.ensureVaultDir();
       await this.app.vault.adapter.write(
         this.getVaultPath(),
         JSON.stringify(vault, null, 2)
@@ -221,7 +246,17 @@ export class SyncStorageProvider {
    */
   async unlock(password) {
     try {
-      const content = await this.app.vault.adapter.read(this.getVaultPath());
+      // 新路径优先；旧路径（1.0.2 及更早）存在则读取并在成功后自动迁移
+      let sourcePath = this.getVaultPath();
+      let content;
+      if (await this.app.vault.adapter.exists(sourcePath)) {
+        content = await this.app.vault.adapter.read(sourcePath);
+      } else if (await this.app.vault.adapter.exists(this.getLegacyVaultPath())) {
+        sourcePath = this.getLegacyVaultPath();
+        content = await this.app.vault.adapter.read(sourcePath);
+      } else {
+        return false;
+      }
       const vault = JSON.parse(content);
       const secretsData = await this.crypto.decryptVault(vault, password);
       if (!secretsData) {
@@ -232,6 +267,12 @@ export class SyncStorageProvider {
       this.password = password;
       this.unlocked = true;
       this.resetLockTimer();
+      // 旧路径 → 新路径自动迁移（保留旧文件，下一次写盘后旧文件自然过时）
+      if (sourcePath === this.getLegacyVaultPath()) {
+        await this.ensureVaultDir();
+        await this.app.vault.adapter.write(this.getVaultPath(), content);
+        new Notice("\u{1F4E6} \u5BC6\u94A5\u5E93\u5DF2\u4ECE\u65E7\u4F4D\u7F6E\u8FC1\u79FB\u81F3 SecretStorage/\uFF08\u4F9B Obsidian Sync \u540C\u6B65\uFF09");
+      }
       return true;
     } catch (error) {
       console.error("SyncStorageProvider unlock error:", error);
@@ -356,6 +397,7 @@ export class SyncStorageProvider {
     if (!updatedVault) {
       throw new Error("Failed to update vault");
     }
+    await this.ensureVaultDir();
     await this.app.vault.adapter.write(
       this.getVaultPath(),
       JSON.stringify(updatedVault, null, 2)
@@ -368,6 +410,7 @@ export class SyncStorageProvider {
   async createBackup() {
     try {
       const backupDir = this.getBackupDir();
+      await this.ensureVaultDir();
       if (!await this.app.vault.adapter.exists(backupDir)) {
         await this.app.vault.adapter.mkdir(backupDir);
       }
@@ -440,30 +483,35 @@ export class SyncStorageProvider {
   }
   /**
    * 痕迹检测（RFC-001 §5.2，审计 D-2）：本 vault 是否存在密码库痕迹
-   * 规则 1：backups/ 目录存在且含 *.enc 文件（storage.ts:270-283 生成的备份）
-   * 规则 2：插件目录内存在其他 *.enc 文件（basename ≠ secrets.enc，如 conflicted copy）
+   * 规则 1：旧路径主文件存在（1.0.2 及更早的存量库，插件目录内）
+   * 规则 2：备份目录（新 SecretStorage/backups 或旧插件目录 backups）含 *.enc
+   * 规则 3：插件目录内存在其他 *.enc 文件（basename ≠ secrets.enc，如 conflicted copy）
    */
   async hasAnyVaultTraces() {
     try {
-      const pluginDir = this.getPluginDir();
-      if (!await this.app.vault.adapter.exists(pluginDir)) {
-        return false;
-      }
       const isMainFile = (p) => String(p).split("/").pop() === this.VAULT_FILE;
-      // 规则 1：备份痕迹
-      const backupDir = this.getBackupDir();
-      if (await this.app.vault.adapter.exists(backupDir)) {
-        const backupListing = await this.app.vault.adapter.list(backupDir);
-        if (backupListing && Array.isArray(backupListing.files) &&
-          backupListing.files.some((f) => f.endsWith(".enc"))) {
-          return true;
+      // 规则 1：旧路径主文件
+      if (await this.app.vault.adapter.exists(this.getLegacyVaultPath())) {
+        return true;
+      }
+      // 规则 2：备份痕迹（新旧两处备份目录）
+      for (const backupDir of [this.getBackupDir(), `${this.getPluginDir()}/${this.BACKUP_DIR}`]) {
+        if (await this.app.vault.adapter.exists(backupDir)) {
+          const backupListing = await this.app.vault.adapter.list(backupDir);
+          if (backupListing && Array.isArray(backupListing.files) &&
+            backupListing.files.some((f) => f.endsWith(".enc"))) {
+            return true;
+          }
         }
       }
-      // 规则 2：插件目录内其他 *.enc（如 conflicted copy）
-      const listing = await this.app.vault.adapter.list(pluginDir);
-      if (listing && Array.isArray(listing.files)) {
-        if (listing.files.some((f) => f.endsWith(".enc") && !isMainFile(f))) {
-          return true;
+      // 规则 3：插件目录内其他 *.enc（如 conflicted copy）
+      const pluginDir = this.getPluginDir();
+      if (await this.app.vault.adapter.exists(pluginDir)) {
+        const listing = await this.app.vault.adapter.list(pluginDir);
+        if (listing && Array.isArray(listing.files)) {
+          if (listing.files.some((f) => f.endsWith(".enc") && !isMainFile(f))) {
+            return true;
+          }
         }
       }
       return false;
