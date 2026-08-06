@@ -25,3 +25,5 @@ data.json
 
 # macOS
 .DS_Store
+# vitest coverage
+coverage/
