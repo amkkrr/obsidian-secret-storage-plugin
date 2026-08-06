@@ -7,7 +7,9 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "node esbuild.config.mjs production",
-		"typecheck": "tsc -noEmit -skipLibCheck"
+		"typecheck": "tsc -noEmit -skipLibCheck",
+		"test": "vitest run",
+		"test:coverage": "vitest run --coverage"
 	},
 	"keywords": [
 		"obsidian",
@@ -19,9 +21,11 @@
 	"license": "UNLICENSED",
 	"devDependencies": {
 		"@types/node": "^22.15.17",
+		"@vitest/coverage-v8": "^4.1.10",
 		"esbuild": "^0.25.5",
 		"obsidian": "latest",
 		"tslib": "^2.8.1",
-		"typescript": "^5.8.3"
+		"typescript": "^5.8.3",
+		"vitest": "^4.1.10"
 	}
 }
