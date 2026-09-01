@@ -832,12 +832,15 @@ class SecretManagerModal extends Modal {
 class SecretStorageSettingTab extends PluginSettingTab {
   plugin: any;
   secretSectionEl: any;
+  secretListEl: any;
   editingId: any;
   searchInput: string;
   constructor(app, plugin) {
     super(app, plugin);
     // 密钥管理区块引用，用于局部刷新
     this.secretSectionEl = null;
+    // 密钥列表容器引用，搜索过滤时仅重绘此区域（避免搜索框失焦）
+    this.secretListEl = null;
     // 当前正在编辑的密钥 ID
     this.editingId = null;
     // 密钥列表搜索关键词（RFC-002 §5.3）
@@ -922,7 +925,19 @@ class SecretStorageSettingTab extends PluginSettingTab {
       return;
     this.secretSectionEl.empty();
     this.secretSectionEl.createEl("h3", { text: "\u{1F511} \u5BC6\u94A5\u7BA1\u7406" });
-    await this.renderSecretManagement(this.secretSectionEl);
+    if (this.plugin.settings.storageMode === "sync" && !this.plugin.storageProvider.isUnlocked()) {
+      new Setting(this.secretSectionEl).setName("\u5BC6\u94A5\u5E93\u5DF2\u9501\u5B9A").setDesc("\u8BF7\u5148\u89E3\u9501\u5BC6\u94A5\u5E93\u4EE5\u7BA1\u7406\u5BC6\u94A5").addButton((btn) => btn.setButtonText("\u{1F513} \u89E3\u9501").setCta().onClick(() => {
+        this.plugin.ensureUnlocked(() => {
+          this.refreshSecretList();
+        });
+      }));
+      this.secretListEl = null;
+      return;
+    }
+    this.renderAddButton(this.secretSectionEl);
+    this.renderSearchBox(this.secretSectionEl);
+    this.secretListEl = this.secretSectionEl.createDiv({ cls: "secret-list" });
+    await this.renderSecretList();
   }
   /**
    * 局部刷新密钥列表
@@ -932,22 +947,15 @@ class SecretStorageSettingTab extends PluginSettingTab {
     await this.loadSecretSection();
   }
   /**
-   * 渲染密钥管理区块
+   * 仅重绘密钥列表（不触碰搜索框，避免搜索输入失焦）
    */
-  async renderSecretManagement(containerEl) {
-    if (this.plugin.settings.storageMode === "sync" && !this.plugin.storageProvider.isUnlocked()) {
-      new Setting(containerEl).setName("\u5BC6\u94A5\u5E93\u5DF2\u9501\u5B9A").setDesc("\u8BF7\u5148\u89E3\u9501\u5BC6\u94A5\u5E93\u4EE5\u7BA1\u7406\u5BC6\u94A5").addButton((btn) => btn.setButtonText("\u{1F513} \u89E3\u9501").setCta().onClick(() => {
-        this.plugin.ensureUnlocked(() => {
-          this.refreshSecretList();
-        });
-      }));
+  async renderSecretList() {
+    if (!this.secretListEl)
       return;
-    }
-    this.renderAddButton(containerEl);
-    this.renderSearchBox(containerEl);
+    this.secretListEl.empty();
     const secrets = await this.plugin.listSecrets();
     if (secrets.length === 0) {
-      containerEl.createEl("p", {
+      this.secretListEl.createEl("p", {
         text: "\u6682\u65E0\u5BC6\u94A5\uFF0C\u70B9\u51FB\u4E0A\u65B9\u6309\u94AE\u6DFB\u52A0",
         cls: "secret-list-empty"
       });
@@ -957,19 +965,18 @@ class SecretStorageSettingTab extends PluginSettingTab {
     const matcher = (text) => prepareSimpleSearch(this.searchInput.trim().toLowerCase())(text) !== null;
     const filtered = filterSecretIds(secrets, this.searchInput, matcher);
     if (filtered.length === 0) {
-      containerEl.createEl("p", {
+      this.secretListEl.createEl("p", {
         text: `\u6CA1\u6709\u5339\u914D\u300C${this.searchInput}\u300D\u7684\u5BC6\u94A5`,
         cls: "secret-list-empty"
       });
       return;
     }
-    const listEl = containerEl.createDiv({ cls: "secret-list" });
     for (const secretId of filtered) {
       // 正在编辑的项优先于过滤器，避免输入词导致编辑表单从 DOM 消失（RFC-002 §5.3）
       if (this.editingId === secretId) {
-        this.renderEditForm(listEl, secretId);
+        this.renderEditForm(this.secretListEl, secretId);
       } else {
-        this.renderSecretItem(listEl, secretId);
+        this.renderSecretItem(this.secretListEl, secretId);
       }
     }
   }
@@ -991,13 +998,14 @@ class SecretStorageSettingTab extends PluginSettingTab {
         }
         debounceTimer = setTimeout(() => {
           this.searchInput = searchText.getValue();
-          this.loadSecretSection();
+          // 只重绘列表，不重建搜索框，保持输入焦点（修复输入即失焦问题）
+          this.renderSecretList();
         }, 150);
       });
     }).addExtraButton((btn) => btn.setIcon("cancel").setTooltip("\u6E05\u7A7A").onClick(() => {
       this.searchInput = "";
       searchText.setValue("");
-      this.loadSecretSection();
+      this.renderSecretList();
     }));
   }
   /**
