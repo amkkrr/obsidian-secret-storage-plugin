@@ -1,4 +1,5 @@
-import { Plugin, Notice, MarkdownView, Modal, Setting, PluginSettingTab } from "obsidian";
+import { Plugin, Notice, MarkdownView, Modal, Setting, PluginSettingTab, FuzzySuggestModal, prepareSimpleSearch } from "obsidian";
+import { filterSecretIds } from "./src/search";
 import { createStorageProvider, LocalStorageProvider, SyncStorageProvider, SyncConflictError } from "./src/storage";
 import { SetupPasswordModal, UnlockModal, ChangePasswordModal, MigrationModal, ConflictResolutionModal, VaultNotFoundModal } from "./src/ui";
 
@@ -56,6 +57,15 @@ export default class SecretStorageDemoPlugin extends Plugin {
     this.addCommand({
       id: "get-secret",
       name: "\u83B7\u53D6\u5BC6\u94A5 (Get Secret)",
+      callback: () => {
+        this.ensureUnlocked(() => {
+          new GetSecretModal(this.app, this).open();
+        });
+      }
+    });
+    this.addCommand({
+      id: "search-secret",
+      name: "\u641C\u7D22\u5BC6\u94A5\u5E76\u590D\u5236 (Search & Copy Secret)",
       callback: () => {
         this.ensureUnlocked(() => {
           new GetSecretModal(this.app, this).open();
@@ -552,47 +562,37 @@ ${secrets.join("\n")}`);
     return container;
   }
 };
-class InsertPlaceholderModal extends Modal {
+class InsertPlaceholderModal extends FuzzySuggestModal<string> {
   plugin: any;
   editor: any;
+  secrets: any[];
   constructor(app, plugin, editor) {
     super(app);
     this.plugin = plugin;
     this.editor = editor;
-  }
-  async onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h2", { text: "\u{1F4DD} \u63D2\u5165\u5BC6\u94A5\u5360\u4F4D\u7B26" });
-    contentEl.createEl("p", {
-      text: "\u9009\u62E9\u4E00\u4E2A\u5DF2\u4FDD\u5B58\u7684\u5BC6\u94A5\uFF0C\u63D2\u5165\u5360\u4F4D\u7B26\u5230\u5F53\u524D\u5149\u6807\u4F4D\u7F6E",
-      cls: "setting-item-description"
-    });
-    const secrets = await this.plugin.listSecrets();
-    if (secrets.length === 0) {
-      contentEl.createEl("p", { text: "\u274C \u6CA1\u6709\u5DF2\u5B58\u50A8\u7684\u5BC6\u94A5\uFF0C\u8BF7\u5148\u4FDD\u5B58\u5BC6\u94A5" });
-      new Setting(contentEl).addButton((btn) => btn.setButtonText("\u4FDD\u5B58\u5BC6\u94A5").setCta().onClick(() => {
-        this.close();
-        new SaveSecretModal(this.app, this.plugin).open();
-      }));
-      return;
-    }
-    contentEl.createEl("p", {
-      text: "\u5360\u4F4D\u7B26\u8BED\u6CD5: {{secret:\u5BC6\u94A5ID}}",
-      cls: "setting-item-description"
-    });
-    secrets.forEach((id) => {
-      new Setting(contentEl).setName(id).setDesc(`\u63D2\u5165 {{secret:${id}}}`).addButton((btn) => btn.setButtonText("\u63D2\u5165").setCta().onClick(() => {
-        const placeholder = `{{secret:${id}}}`;
-        this.editor.replaceSelection(placeholder);
-        this.close();
-        new Notice(`\u2705 \u5DF2\u63D2\u5165\u5360\u4F4D\u7B26: ${placeholder}`);
-      }));
+    this.secrets = [];
+    this.setPlaceholder("\u641C\u7D22\u8981\u63D2\u5165\u7684\u5BC6\u94A5 ID...");
+    this.setInstructions([
+      { command: "\u2191\u2193", purpose: "\u9009\u62E9" },
+      { command: "\u21B5", purpose: "\u63D2\u5165\u5360\u4F4D\u7B26" },
+      { command: "esc", purpose: "\u53D6\u6D88" }
+    ]);
+    this.limit = 50;
+    this.plugin.listSecrets().then((secrets) => {
+      this.secrets = secrets;
     });
   }
-  onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
+  getItems() {
+    return this.secrets;
+  }
+  getItemText(id) {
+    return id;
+  }
+  onChooseItem(id, evt) {
+    const placeholder = `{{secret:${id}}}`;
+    this.editor.replaceSelection(placeholder);
+    this.close();
+    new Notice(`\u2705 \u5DF2\u63D2\u5165\u5360\u4F4D\u7B26: ${placeholder}`);
   }
 };
 class ReplaceWithSecretModal extends Modal {
@@ -700,71 +700,71 @@ class SaveSecretModal extends Modal {
     contentEl.empty();
   }
 };
-class GetSecretModal extends Modal {
+class GetSecretModal extends FuzzySuggestModal<string> {
   plugin: any;
+  secrets: any[];
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
+    this.secrets = [];
+    this.setPlaceholder("\u641C\u7D22\u5BC6\u94A5 ID...");
+    this.setInstructions([
+      { command: "\u2191\u2193", purpose: "\u9009\u62E9" },
+      { command: "\u21B5", purpose: "\u590D\u5236\u5BC6\u94A5" },
+      { command: "esc", purpose: "\u53D6\u6D88" }
+    ]);
+    this.limit = 50;
+    // \u9884\u52A0\u8F7D\u5BC6\u94A5 ID\uFF08getItems \u4E3A\u540C\u6B65\uFF0ClistSecrets \u4E3A async\uFF09
+    this.plugin.listSecrets().then((secrets) => {
+      this.secrets = secrets;
+    });
   }
-  async onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h2", { text: "\u{1F50D} \u83B7\u53D6\u5BC6\u94A5" });
-    const secrets = await this.plugin.listSecrets();
-    if (secrets.length === 0) {
-      contentEl.createEl("p", { text: "\u6CA1\u6709\u5DF2\u5B58\u50A8\u7684\u5BC6\u94A5" });
-      return;
-    }
-    for (const id of secrets) {
-      new Setting(contentEl).setName(id).addButton((btn) => btn.setButtonText("\u67E5\u770B").onClick(async () => {
-        const secret = await this.plugin.getSecret(id);
-        if (secret) {
-          new Notice(`\u5BC6\u94A5 "${id}":
-${secret}`, 5e3);
-        } else {
-          new Notice(`\u5BC6\u94A5 "${id}" \u4E0D\u5B58\u5728\u6216\u4E3A\u7A7A`);
-        }
-      })).addButton((btn) => btn.setButtonText("\u590D\u5236").onClick(async () => {
-        const secret = await this.plugin.getSecret(id);
-        if (secret) {
-          await navigator.clipboard.writeText(secret);
-          new Notice(`\u2705 \u5BC6\u94A5 "${id}" \u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F`);
-        }
-      }));
-    }
+  getItems() {
+    return this.secrets;
   }
-  onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
+  getItemText(id) {
+    return id;
+  }
+  async onChooseItem(id, evt) {
+    const secret = await this.plugin.getSecret(id);
+    if (secret) {
+      await navigator.clipboard.writeText(secret);
+      new Notice(`\u2705 \u5BC6\u94A5 "${id}" \u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F`);
+    } else {
+      new Notice(`\u5BC6\u94A5 "${id}" \u4E0D\u5B58\u5728\u6216\u4E3A\u7A7A`);
+    }
   }
 };
-class DeleteSecretModal extends Modal {
+class DeleteSecretModal extends FuzzySuggestModal<string> {
   plugin: any;
+  secrets: any[];
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
+    this.secrets = [];
+    this.setPlaceholder("\u641C\u7D22\u8981\u5220\u9664\u7684\u5BC6\u94A5 ID...");
+    this.setInstructions([
+      { command: "\u2191\u2193", purpose: "\u9009\u62E9" },
+      { command: "\u21B5", purpose: "\u5220\u9664\u5BC6\u94A5" },
+      { command: "esc", purpose: "\u53D6\u6D88" }
+    ]);
+    this.limit = 50;
+    this.plugin.listSecrets().then((secrets) => {
+      this.secrets = secrets;
+    });
   }
-  async onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h2", { text: "\u{1F5D1}\uFE0F \u5220\u9664\u5BC6\u94A5" });
-    const secrets = await this.plugin.listSecrets();
-    if (secrets.length === 0) {
-      contentEl.createEl("p", { text: "\u6CA1\u6709\u5DF2\u5B58\u50A8\u7684\u5BC6\u94A5" });
-      return;
-    }
-    for (const id of secrets) {
-      new Setting(contentEl).setName(id).addButton((btn) => btn.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
-        if (await this.plugin.deleteSecret(id)) {
-          this.close();
-          new DeleteSecretModal(this.app, this.plugin).open();
-        }
-      }));
-    }
+  getItems() {
+    return this.secrets;
   }
-  onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
+  getItemText(id) {
+    return id;
+  }
+  onChooseItem(id, evt) {
+    new ConfirmDeleteModal(this.app, id, async (confirmed) => {
+      if (confirmed) {
+        await this.plugin.deleteSecret(id);
+      }
+    }).open();
   }
 };
 class SecretManagerModal extends Modal {
@@ -833,12 +833,15 @@ class SecretStorageSettingTab extends PluginSettingTab {
   plugin: any;
   secretSectionEl: any;
   editingId: any;
+  searchInput: string;
   constructor(app, plugin) {
     super(app, plugin);
     // 密钥管理区块引用，用于局部刷新
     this.secretSectionEl = null;
     // 当前正在编辑的密钥 ID
     this.editingId = null;
+    // 密钥列表搜索关键词（RFC-002 §5.3）
+    this.searchInput = "";
     this.plugin = plugin;
   }
   display() {
@@ -941,6 +944,7 @@ class SecretStorageSettingTab extends PluginSettingTab {
       return;
     }
     this.renderAddButton(containerEl);
+    this.renderSearchBox(containerEl);
     const secrets = await this.plugin.listSecrets();
     if (secrets.length === 0) {
       containerEl.createEl("p", {
@@ -949,14 +953,52 @@ class SecretStorageSettingTab extends PluginSettingTab {
       });
       return;
     }
+    // RFC-002 §5.3：按关键词过滤（空则全部）
+    const matcher = (text) => prepareSimpleSearch(this.searchInput.trim().toLowerCase())(text) !== null;
+    const filtered = filterSecretIds(secrets, this.searchInput, matcher);
+    if (filtered.length === 0) {
+      containerEl.createEl("p", {
+        text: `\u6CA1\u6709\u5339\u914D\u300C${this.searchInput}\u300D\u7684\u5BC6\u94A5`,
+        cls: "secret-list-empty"
+      });
+      return;
+    }
     const listEl = containerEl.createDiv({ cls: "secret-list" });
-    for (const secretId of secrets) {
+    for (const secretId of filtered) {
+      // 正在编辑的项优先于过滤器，避免输入词导致编辑表单从 DOM 消失（RFC-002 §5.3）
       if (this.editingId === secretId) {
         this.renderEditForm(listEl, secretId);
       } else {
         this.renderSecretItem(listEl, secretId);
       }
     }
+  }
+  /**
+   * 渲染密钥搜索框（RFC-002 §5.3）
+   */
+  renderSearchBox(containerEl) {
+    let searchText;
+    new Setting(containerEl).setName("\u641C\u7D22\u5BC6\u94A5").setDesc("\u8F93\u5165\u5173\u952E\u8BCD\u8FC7\u6EE4\u5BC6\u94A5 ID").addText((text) => {
+      searchText = text;
+      text.inputEl.addClass("secret-search-input");
+      text.setPlaceholder("\u8F93\u5165\u5173\u952E\u8BCD\u8FC7\u6EE4...");
+      text.setValue(this.searchInput);
+      // 防抖 150ms，避免每次输入都重绘
+      let debounceTimer = null;
+      text.inputEl.addEventListener("input", () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        debounceTimer = setTimeout(() => {
+          this.searchInput = searchText.getValue();
+          this.loadSecretSection();
+        }, 150);
+      });
+    }).addExtraButton((btn) => btn.setIcon("cancel").setTooltip("\u6E05\u7A7A").onClick(() => {
+      this.searchInput = "";
+      searchText.setValue("");
+      this.loadSecretSection();
+    }));
   }
   /**
    * 渲染新增按钮

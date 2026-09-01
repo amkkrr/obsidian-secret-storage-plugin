@@ -97,6 +97,11 @@
 	margin-top: 8px;
 }
 
+/* 密钥搜索框（RFC-002 §5.3） */
+.secret-search-input {
+	font-family: var(--font-monospace);
+}
+
 /* 编辑表单 */
 .secret-edit-form {
 	background: var(--background-secondary);
