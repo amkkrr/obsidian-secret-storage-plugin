@@ -55,6 +55,7 @@ obsidian-secret-storage-plugin/
 ├── src/                   # 源码模块
 │   ├── crypto.ts          # 加密服务
 │   ├── storage.ts         # LocalStorageProvider / SyncStorageProvider
+│   ├── search.ts          # 密钥 ID 搜索纯函数（RFC-002）
 │   └── ui.ts              # 密码/解锁/冲突/迁移模态框
 ├── tests/                 # 单元测试
 │   ├── crypto.test.ts

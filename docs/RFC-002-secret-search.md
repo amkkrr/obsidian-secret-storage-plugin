@@ -83,27 +83,23 @@
 
 ## 5. 详细设计
 
-### 5.1 统一密钥 ID 搜索助手（`main.ts`）
+### 5.1 统一密钥 ID 搜索助手（`src/search.ts`）
 
-新增通用过滤函数，供设置页列表与后续复用：
+新增独立纯函数模块 `src/search.ts`（不依赖 obsidian 运行时，便于单元测试）：
 
 ```ts
-// main.ts
-import { prepareSimpleSearch } from "obsidian";
-
-/**
- * 过滤密钥 ID 列表。query 为空时返回全部。
- * 用 prepareSimpleSearch（空格分词，命中更宽松、性能优于模糊匹配）。
- */
-filterSecretIds(ids: string[], query: string): string[] {
+// src/search.ts
+export function filterSecretIds(ids, query, matcher = null) {
   if (!query || query.trim() === "") return ids;
   const q = query.trim().toLowerCase();
-  const matcher = prepareSimpleSearch(q);
-  return ids.filter((id) => matcher(id.toLowerCase()) !== null);
+  const match = matcher || ((text) => text.includes(q));
+  return ids.filter((id) => match(id.toLowerCase()));
 }
 ```
 
-> 讨论点：列表过滤用 `prepareSimpleSearch`（简单分词、性能更好，适合列表实时渲染）；`FuzzySuggestModal` 内部自带模糊匹配（`getItems` + `getItemText` 交给框架过滤），无需额外调用。
+- 默认用子串 `includes` 匹配（大小写不敏感），满足列表过滤场景。
+- 可注入自定义 `matcher`（如 `prepareSimpleSearch` 包装），由调用方决定匹配策略。
+- `main.ts` 设置页调用时注入 `prepareSimpleSearch` 包装的 matcher，获得分词匹配手感。
 
 ### 5.2 方案 A：三个「选一个密钥」模态框改造成 `FuzzySuggestModal`
 
@@ -208,7 +204,8 @@ this.addCommand({
 
 | 位置 | 变更 | 类型 |
 | --- | --- | --- |
-| `main.ts` helper | `filterSecretIds(ids, query)` | 新增方法 |
+| `src/search.ts` | 新增 `filterSecretIds` 纯函数（可注入 matcher） | 新增 |
+| `main.ts` helper | 设置页调用 `filterSecretIds` 并注入 `prepareSimpleSearch` matcher | 增强 |
 | `main.ts` `GetSecretModal` | 改 `extends FuzzySuggestModal<string>`，`getItems/getItemText/onChooseSuggestion` | 重写 |
 | `main.ts` `DeleteSecretModal` | 同上；`onChooseSuggestion` 弹确认 → 删除 | 重写 |
 | `main.ts` `InsertPlaceholderModal` | 同上；`onChooseSuggestion` 插入占位符 | 重写 |
