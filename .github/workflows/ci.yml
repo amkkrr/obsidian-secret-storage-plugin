@@ -1,8 +1,12 @@
 name: CI
 
-# PR 触发的 CI 检查：类型检查 + 单元测试
+# PR 触发的 CI 检查：类型检查 + 构建 + 单元测试（含覆盖率门禁）
 # 供 main 分支保护规则「要求 status checks 通过」使用。
-# 触发条件：push 到任意分支（含 PR 分支）时运行。
+# 触发条件：PR 到 main，或 push 到 main 时运行。
+#
+# 注意：job 的 name「Typecheck and test」同时是分支保护规则要求的
+# status check context，改名会导致 main 分支保护失效。
+# 覆盖率阈值（80%）在 vitest.config.ts 中定义，npm run test:coverage 不达标会失败。
 
 on:
   pull_request:
@@ -32,5 +36,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Build
+        run: npm run build
+
+      - name: Test with coverage
+        run: npm run test:coverage
